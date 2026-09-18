@@ -13,7 +13,7 @@ Prérequis : Docker Desktop avec Docker Compose.
 3. Lancer `docker compose up --build`.
 4. Ouvrir <http://localhost:18473>.
 
-L'API est aussi accessible localement sur <http://localhost:3000/api/health>.
+L'API est aussi accessible localement sur <http://localhost:18474/api/health>.
 
 ## Services
 

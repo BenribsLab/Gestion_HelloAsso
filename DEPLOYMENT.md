@@ -23,6 +23,7 @@ Créer `/opt/cey-gestion/.env.production` avec les valeurs non secrètes :
 POSTGRES_DB=gestion_utilisateurs
 POSTGRES_USER=gestion_app
 APP_HOST_PORT=18473
+API_HOST_PORT=18474
 
 HELLOASSO_BASE_URL=https://api.helloasso.com
 HELLOASSO_CLIENT_ID=identifiant-fourni-par-helloasso
@@ -71,7 +72,7 @@ Se connecter immédiatement, ouvrir le menu du compte et remplacer le mot de pas
 
 Copier `deploy/Caddyfile` dans `/etc/caddy/Caddyfile`, vérifier la configuration puis recharger Caddy. Caddy récupère et renouvelle automatiquement le certificat TLS lorsque le DNS pointe vers le VPS et que les ports 80/443 sont accessibles.
 
-Le port applicatif défini par `APP_HOST_PORT` (`18473` par défaut) et le port API `3000` restent liés à `127.0.0.1`. PostgreSQL n'est publié sur aucun port de l'hôte. Avec ISPConfig, la directive Apache doit donc envoyer le trafic vers `http://127.0.0.1:18473`.
+Le port applicatif défini par `APP_HOST_PORT` (`18473` par défaut) et le port API défini par `API_HOST_PORT` (`18474` par défaut) restent liés à `127.0.0.1`. PostgreSQL n'est publié sur aucun port de l'hôte. Avec ISPConfig, la directive Apache doit uniquement envoyer le trafic vers `http://127.0.0.1:18473`.
 
 ## 6. Sauvegardes
 
