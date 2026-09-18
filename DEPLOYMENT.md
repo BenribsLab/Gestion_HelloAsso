@@ -72,7 +72,7 @@ Se connecter immédiatement, ouvrir le menu du compte et remplacer le mot de pas
 
 Copier `deploy/Caddyfile` dans `/etc/caddy/Caddyfile`, vérifier la configuration puis recharger Caddy. Caddy récupère et renouvelle automatiquement le certificat TLS lorsque le DNS pointe vers le VPS et que les ports 80/443 sont accessibles.
 
-Le port applicatif défini par `APP_HOST_PORT` (`18473` par défaut) et le port API défini par `API_HOST_PORT` (`18474` par défaut) restent liés à `127.0.0.1`. PostgreSQL n'est publié sur aucun port de l'hôte. Avec ISPConfig, la directive Apache doit uniquement envoyer le trafic vers `http://127.0.0.1:18473`.
+Le port applicatif défini par `APP_HOST_PORT` (`18473` par défaut) et le port API défini par `API_HOST_PORT` (`18474` par défaut) restent liés à `127.0.0.1`. PostgreSQL n'est publié sur aucun port de l'hôte. Avec ISPConfig, la directive Apache doit envoyer le trafic vers `http://127.0.0.1:18473`. Prévoir également `ProxyTimeout 300` : la reconnaissance OCR d'un lot de documents peut durer plus d'une minute lors de sa première exécution.
 
 ## 6. Sauvegardes
 

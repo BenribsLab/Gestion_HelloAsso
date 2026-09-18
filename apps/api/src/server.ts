@@ -1,6 +1,10 @@
 import Fastify from "fastify";
 import cookie from "@fastify/cookie";
+import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
+import { ZipArchive } from "archiver";
+import { PassThrough } from "node:stream";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db.js";
@@ -11,6 +15,17 @@ import { getDynamicGroupCriteria, refreshDynamicGroups, validateDynamicCriterion
 import { emailConfiguration, listEmailMessages, previewRecipients, sendEmailMessage, verifyEmailConnection } from "./email.js";
 import { fencingCategoryError, normalizeBirthDate } from "./fencing-category.js";
 import { installSecurity, prepareAuthentication } from "./security.js";
+import {
+  documentAsPdf,
+  documentHash,
+  exportBaseName,
+  healthAnalysisVersion,
+  maxDocumentBytes,
+  recognizeHealthDocument,
+  validateDocument,
+  type DocumentClassification,
+  type DocumentContent
+} from "./documents.js";
 import {
   discoverCampaigns,
   getSetupState,
@@ -24,6 +39,7 @@ import {
 const config = loadConfig();
 const database = createDatabase(config);
 const helloasso = createHelloAssoClient(config);
+const documentExportJobs = new Map<string, DocumentExportJob>();
 const server = Fastify({
   logger: true,
   trustProxy: config.trustProxy,
@@ -33,6 +49,9 @@ const server = Fastify({
 });
 
 await server.register(cookie);
+await server.register(multipart, {
+  limits: { files: 1, fileSize: maxDocumentBytes, fields: 5, parts: 6 }
+});
 await server.register(rateLimit, {
   global: true,
   max: 300,
@@ -54,7 +73,8 @@ const campaignSelectionSchema = z.object({
   formSlugs: z.array(z.string().min(1)).min(1).max(100)
 });
 const fieldSelectionSchema = z.object({
-  fieldKeys: z.array(z.string().min(1)).max(100)
+  fieldKeys: z.array(z.string().min(1)).max(100),
+  healthDocumentFieldKey: z.string().min(1).max(100).nullable().optional()
 });
 const groupingPreviewSchema = z.object({
   fieldKeys: z.array(z.string().min(1)).min(1).max(20)
@@ -105,6 +125,20 @@ const memberOverrideFieldSchema = z.object({
   memberId: z.uuid(),
   fieldKey: z.string().min(1).max(100)
 });
+const memberDocumentSchema = z.object({ memberId: z.uuid(), fieldKey: z.string().min(1).max(100) });
+const documentClassificationSchema = z.object({ classification: z.enum(["certificate", "attestation", "questionnaire", "unknown"]) });
+const documentExportSchema = z.object({
+  fieldKey: z.string().min(1).max(100),
+  scope: z.enum(["all", "groups"]),
+  groupIds: z.array(z.uuid()).max(100).default([]),
+  identitySource: z.enum(["member", "payer"]),
+  template: z.string().trim().min(1).max(200),
+  documentSelection: z.enum(["new", "all"]).default("new"),
+  reanalyze: z.boolean().default(false)
+}).refine((value) => value.scope === "all" || value.groupIds.length > 0, {
+  message: "Choisissez au moins un groupe."
+});
+const documentExportIdSchema = z.object({ exportId: z.uuid() });
 const scheduleSelectionSchema = z.object({
   schedules: z.array(z.object({
     weekday: z.number().int().min(1).max(7),
@@ -207,7 +241,7 @@ server.post("/api/email/messages", { config: { rateLimit: { max: 10, timeWindow:
 });
 
 server.get("/api/members", async () => {
-  const [result, fieldsResult, categoryDefinitions, categorySeason] = await Promise.all([database.query<{
+  const [result, fieldsResult, documentsResult, categoryDefinitions, categorySeason] = await Promise.all([database.query<{
     id: string;
     firstName: string;
     lastName: string;
@@ -255,10 +289,25 @@ server.get("/api/members", async () => {
     LEFT JOIN groups g ON g.id = mg.group_id
     GROUP BY m.id, birth.value
     ORDER BY m.last_name, m.first_name
-  `), database.query<{ key: string; label: string; type: string }>(`
-    SELECT field_key AS key, label, field_type AS type
+  `), database.query<{ key: string; label: string; type: string; documentRole: "health" | null }>(`
+    SELECT field_key AS key, label, field_type AS type, document_role AS "documentRole"
     FROM helloasso_fields WHERE selected = true ORDER BY label
+  `), database.query<{
+    memberId: string; fieldKey: string; helloassoAvailable: boolean; localAvailable: boolean;
+    helloassoName: string | null; localName: string | null; helloassoMediaType: string | null;
+    localMediaType: string | null; helloassoSizeBytes: number | null; localSizeBytes: number | null;
+    classification: DocumentClassification; classificationSource: "automatic" | "manual"; analyzedAt: Date | null;
+  }>(`
+    SELECT member_id AS "memberId", field_key AS "fieldKey",
+           helloasso_url IS NOT NULL AS "helloassoAvailable",
+           local_content IS NOT NULL AS "localAvailable",
+           helloasso_name AS "helloassoName", local_name AS "localName",
+           helloasso_media_type AS "helloassoMediaType", local_media_type AS "localMediaType",
+           helloasso_size_bytes AS "helloassoSizeBytes", local_size_bytes AS "localSizeBytes",
+           classification, classification_source AS "classificationSource", analyzed_at AS "analyzedAt"
+    FROM member_documents
   `), getCategoryDefinitions(database), getCategorySeason(database)]);
+  const documents = new Map(documentsResult.rows.map((document) => [`${document.memberId}\0${document.fieldKey}`, document]));
   return {
     season: categorySeason.label,
     items: result.rows.map((member) => {
@@ -275,6 +324,7 @@ server.get("/api/members", async () => {
           (key) => Object.hasOwn(member.localOverrides, key)
         ),
         customFields: fieldsResult.rows.map((field) => {
+          const document = documents.get(`${member.id}\0${field.key}`);
           const linkedField = linkedCoreField(field);
           const linkedOverride = linkedField && Object.hasOwn(member.localOverrides, linkedField);
           return {
@@ -284,7 +334,19 @@ server.get("/api/members", async () => {
               : linkedOverride
                 ? member.localOverrides[linkedField]
                 : member.profileData[field.key] ?? null,
-            overridden: Object.hasOwn(profileOverrides, field.key) || Boolean(linkedOverride)
+            overridden: Object.hasOwn(profileOverrides, field.key) || Boolean(linkedOverride),
+            document: field.type === "File" ? {
+              available: Boolean(document?.localAvailable || document?.helloassoAvailable),
+              source: document?.localAvailable ? "local" : document?.helloassoAvailable ? "helloasso" : null,
+              fileName: document?.localAvailable ? document.localName : document?.helloassoName ?? null,
+              mediaType: document?.localAvailable ? document.localMediaType : document?.helloassoMediaType ?? null,
+              sizeBytes: document?.localAvailable ? document.localSizeBytes : document?.helloassoSizeBytes ?? null,
+              classification: document?.classification ?? "unknown",
+              classificationSource: document?.classificationSource ?? "automatic",
+              health: field.documentRole === "health",
+              analyzedAt: document?.analyzedAt ?? null,
+              hasHelloAssoOriginal: Boolean(document?.helloassoAvailable)
+            } : undefined
           };
         }),
         profileData: undefined,
@@ -687,12 +749,13 @@ server.put("/api/members/:memberId", async (request, reply) => {
       const fieldKeys = Object.keys(input.profileData);
       const fieldsResult = await client.query<{ key: string; label: string; type: string }>(
         `SELECT field_key AS key, label, field_type AS type
-         FROM helloasso_fields WHERE selected = true AND field_key = ANY($1::text[])`,
+         FROM helloasso_fields
+         WHERE selected = true AND field_type <> 'File' AND field_key = ANY($1::text[])`,
         [fieldKeys]
       );
       if (fieldsResult.rowCount !== fieldKeys.length) {
         await client.query("ROLLBACK");
-        return reply.code(400).send({ message: "Un des champs facultatifs n'est pas disponible." });
+        return reply.code(400).send({ message: "Un des champs supplémentaires n'est pas modifiable ici." });
       }
       const profileOverrides = isRecord(localOverrides.profileData)
         ? { ...localOverrides.profileData }
@@ -771,7 +834,7 @@ server.delete("/api/members/:memberId/overrides/:fieldKey", async (request, repl
       const field = fieldResult.rows[0];
       if (!field) {
         await client.query("ROLLBACK");
-        return reply.code(404).send({ message: "Ce champ facultatif n'existe pas." });
+        return reply.code(404).send({ message: "Ce champ supplémentaire n'existe pas." });
       }
       const profileOverrides = isRecord(localOverrides.profileData)
         ? { ...localOverrides.profileData }
@@ -796,6 +859,151 @@ server.delete("/api/members/:memberId/overrides/:fieldKey", async (request, repl
   }
 });
 
+server.get("/api/documents/config", async () => {
+  const [fields, settings] = await Promise.all([
+    database.query<{ key: string; label: string; health: boolean; availableCount: number; newCount: number }>(`
+      SELECT f.field_key AS key, f.label, f.document_role = 'health' AS health,
+             count(d.member_id) FILTER (WHERE d.local_content IS NOT NULL OR d.helloasso_url IS NOT NULL)::int AS "availableCount",
+             count(d.member_id) FILTER (
+               WHERE (d.local_content IS NOT NULL OR d.helloasso_url IS NOT NULL)
+                 AND (d.content_hash IS NULL OR d.last_exported_hash IS DISTINCT FROM d.content_hash)
+             )::int AS "newCount"
+      FROM helloasso_fields f
+      LEFT JOIN member_documents d ON d.field_key = f.field_key
+      WHERE f.selected = true AND f.field_type = 'File'
+      GROUP BY f.field_key ORDER BY f.label
+    `),
+    database.query<{ value: { identitySource?: "member" | "payer"; template?: string; documentSelection?: "new" | "all" } }>(
+      "SELECT value FROM app_settings WHERE key = 'document_export'"
+    )
+  ]);
+  return {
+    fields: fields.rows,
+    identitySource: settings.rows[0]?.value.identitySource ?? "member",
+    template: settings.rows[0]?.value.template ?? "{nom}-{prenom} - {type_document}",
+    documentSelection: settings.rows[0]?.value.documentSelection ?? "all"
+  };
+});
+
+server.get("/api/members/:memberId/documents/:fieldKey", async (request, reply) => {
+  const input = memberDocumentSchema.parse(request.params);
+  const query = z.object({ download: z.enum(["0", "1"]).optional() }).parse(request.query);
+  const record = await getDocumentRecord(input.memberId, input.fieldKey);
+  if (!record) return reply.code(404).send({ message: "Ce document n'existe pas." });
+  const document = await resolveDocument(record);
+  await analyzeAndSave(record, document);
+  await logDocumentAccess(request.authUser?.id ?? null, input.memberId, input.fieldKey, query.download === "1" ? "download" : "view");
+  reply.header("Content-Type", document.mediaType);
+  reply.header("Content-Length", document.content.length);
+  reply.header("Content-Disposition", `${query.download === "1" ? "attachment" : "inline"}; filename*=UTF-8''${encodeURIComponent(document.fileName)}`);
+  return reply.send(document.content);
+});
+
+server.post("/api/members/:memberId/documents/:fieldKey", {
+  bodyLimit: 16 * 1024 * 1024,
+  config: { rateLimit: { max: 20, timeWindow: "1 hour" } }
+}, async (request, reply) => {
+  const input = memberDocumentSchema.parse(request.params);
+  const field = await database.query<{ health: boolean }>(`
+    SELECT document_role = 'health' AS health FROM helloasso_fields
+    WHERE field_key = $1 AND selected = true AND field_type = 'File'
+      AND EXISTS (SELECT 1 FROM members WHERE id = $2)
+  `, [input.fieldKey, input.memberId]);
+  if (!field.rows[0]) return reply.code(404).send({ message: "Ce champ document n'existe pas." });
+  const part = await request.file();
+  if (!part) return reply.code(400).send({ message: "Choisissez un fichier." });
+  const content = await part.toBuffer();
+  const document = validateDocument(content, part.mimetype, part.filename);
+  const hash = documentHash(document);
+  const recognition = field.rows[0].health
+    ? await recognizeHealthDocument(document, hash)
+    : { classification: "unknown" as const, hash };
+  await database.query(`
+    INSERT INTO member_documents
+      (member_id, field_key, local_content, local_name, local_media_type, local_size_bytes,
+       classification, classification_source, analyzed_hash, analyzed_at, local_uploaded_at,
+       content_hash, analysis_version)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, 'automatic', $8, now(), now(), $9, $10)
+    ON CONFLICT (member_id, field_key) DO UPDATE SET
+      local_content = EXCLUDED.local_content, local_name = EXCLUDED.local_name,
+      local_media_type = EXCLUDED.local_media_type, local_size_bytes = EXCLUDED.local_size_bytes,
+      classification = EXCLUDED.classification, classification_source = 'automatic',
+      analyzed_hash = EXCLUDED.analyzed_hash, analyzed_at = now(), local_uploaded_at = now(),
+      content_hash = EXCLUDED.content_hash, analysis_version = EXCLUDED.analysis_version, updated_at = now()
+  `, [input.memberId, input.fieldKey, document.content, document.fileName, document.mediaType,
+    document.content.length, recognition.classification, recognition.hash, hash,
+    field.rows[0].health ? healthAnalysisVersion : 0]);
+  await logDocumentAccess(request.authUser?.id ?? null, input.memberId, input.fieldKey, "upload");
+  return { uploaded: true, classification: recognition.classification };
+});
+
+server.delete("/api/members/:memberId/documents/:fieldKey/local", async (request, reply) => {
+  const input = memberDocumentSchema.parse(request.params);
+  const result = await database.query(`
+    UPDATE member_documents SET local_content = NULL, local_name = NULL, local_media_type = NULL,
+      local_size_bytes = NULL, local_uploaded_at = NULL, classification = 'unknown',
+      classification_source = 'automatic', analyzed_hash = NULL, analyzed_at = NULL,
+      content_hash = NULL, analysis_version = 0, updated_at = now()
+    WHERE member_id = $1 AND field_key = $2 AND local_content IS NOT NULL
+  `, [input.memberId, input.fieldKey]);
+  if (!result.rowCount) return reply.code(404).send({ message: "Aucun fichier local à supprimer." });
+  await logDocumentAccess(request.authUser?.id ?? null, input.memberId, input.fieldKey, "revert");
+  return { revertedToHelloAsso: true };
+});
+
+server.put("/api/members/:memberId/documents/:fieldKey/classification", async (request, reply) => {
+  const input = memberDocumentSchema.parse(request.params);
+  const { classification } = documentClassificationSchema.parse(request.body);
+  const result = await database.query(`
+    UPDATE member_documents SET classification = $3, classification_source = 'manual', updated_at = now()
+    WHERE member_id = $1 AND field_key = $2 AND (local_content IS NOT NULL OR helloasso_url IS NOT NULL)
+  `, [input.memberId, input.fieldKey, classification]);
+  if (!result.rowCount) return reply.code(404).send({ message: "Ce document n'existe pas." });
+  await logDocumentAccess(request.authUser?.id ?? null, input.memberId, input.fieldKey, "classify");
+  return { classification, classificationSource: "manual" };
+});
+
+server.post("/api/documents/exports", {
+  config: { rateLimit: { max: 5, timeWindow: "1 hour" } }
+}, async (request, reply) => {
+  const input = documentExportSchema.parse(request.body);
+  const owner = request.authUser?.id ?? request.authUser?.email ?? "local";
+  pruneDocumentExportJobs();
+  if ([...documentExportJobs.values()].some((job) => job.owner === owner && job.status === "running")) {
+    return reply.code(409).send({ message: "Un export de documents est déjà en cours pour votre compte." });
+  }
+  const job: DocumentExportJob = {
+    id: randomUUID(), owner, status: "running", total: 0, processed: 0,
+    certificateCount: 0, attestationCount: 0, questionnaireCount: 0, unknownCount: 0,
+    archive: null, fileName: null, error: null, expiresAt: Date.now() + 30 * 60_000
+  };
+  documentExportJobs.set(job.id, job);
+  void buildDocumentExport(input, job, request.authUser?.id ?? null).catch((error: unknown) => {
+    job.status = "failed";
+    job.error = error instanceof Error ? error.message : "La préparation de l'archive a échoué.";
+  });
+  return reply.code(202).send({ exportId: job.id });
+});
+
+server.get("/api/documents/exports/:exportId", async (request, reply) => {
+  const { exportId } = documentExportIdSchema.parse(request.params);
+  const job = ownedDocumentExportJob(exportId, request.authUser?.id ?? request.authUser?.email ?? "local");
+  if (!job) return reply.code(404).send({ message: "Cet export n'existe plus." });
+  return documentExportStatus(job);
+});
+
+server.get("/api/documents/exports/:exportId/download", async (request, reply) => {
+  const { exportId } = documentExportIdSchema.parse(request.params);
+  const job = ownedDocumentExportJob(exportId, request.authUser?.id ?? request.authUser?.email ?? "local");
+  if (!job) return reply.code(404).send({ message: "Cet export n'existe plus." });
+  if (job.status !== "ready" || !job.archive || !job.fileName) {
+    return reply.code(409).send({ message: "L'archive n'est pas encore prête." });
+  }
+  reply.header("Content-Type", "application/zip");
+  reply.header("Content-Disposition", `attachment; filename="${job.fileName}"`);
+  return reply.send(job.archive);
+});
+
 server.post("/api/helloasso/check", async (_request, reply) => {
   const organization = await helloasso.checkConnection();
   return reply.send({ connected: true, organization });
@@ -814,7 +1022,7 @@ server.put("/api/setup/campaigns", async (request) => {
 
 server.put("/api/setup/fields", async (request) => {
   const input = fieldSelectionSchema.parse(request.body);
-  return selectFields(database, [...new Set(input.fieldKeys)]);
+  return selectFields(database, [...new Set(input.fieldKeys)], input.healthDocumentFieldKey ?? null);
 });
 
 server.post("/api/setup/group-preview", async (request) => {
@@ -883,6 +1091,250 @@ function linkedCoreField(field: { label: string; type: string }): "birthDate" | 
   if (/e-?mail|courriel/.test(label)) return "email";
   if (field.type === "Phone" && /telephone 1/.test(label)) return "phone";
   return null;
+}
+
+type DocumentRecord = {
+  memberId: string;
+  fieldKey: string;
+  health: boolean;
+  helloassoUrl: string | null;
+  helloassoName: string | null;
+  localContent: Buffer | null;
+  localName: string | null;
+  localMediaType: string | null;
+  classification: DocumentClassification;
+  classificationSource: "automatic" | "manual";
+  analyzedHash: string | null;
+  contentHash: string | null;
+  lastExportedHash: string | null;
+  analysisVersion: number;
+};
+
+type ExportMember = {
+  id: string;
+  memberFirstName: string;
+  memberLastName: string;
+  payerFirstName: string | null;
+  payerLastName: string | null;
+};
+
+type DocumentExportJob = {
+  id: string;
+  owner: string;
+  status: "running" | "ready" | "failed";
+  total: number;
+  processed: number;
+  certificateCount: number;
+  attestationCount: number;
+  questionnaireCount: number;
+  unknownCount: number;
+  archive: Buffer | null;
+  fileName: string | null;
+  error: string | null;
+  expiresAt: number;
+};
+
+async function buildDocumentExport(
+  input: z.infer<typeof documentExportSchema>,
+  job: DocumentExportJob,
+  userId: string | null
+) {
+  const field = await database.query<{ health: boolean }>(`
+    SELECT document_role = 'health' AS health FROM helloasso_fields
+    WHERE field_key = $1 AND selected = true AND field_type = 'File'
+  `, [input.fieldKey]);
+  if (!field.rows[0]) throw new Error("Ce champ document n'est pas disponible.");
+  const members = await database.query<ExportMember>(`
+    SELECT m.id, m.first_name AS "memberFirstName", m.last_name AS "memberLastName",
+           m.source_data->>'payerFirstName' AS "payerFirstName",
+           m.source_data->>'payerLastName' AS "payerLastName"
+    FROM members m
+    WHERE m.status = 'active'
+      AND ($1::text = 'all' OR EXISTS (
+        SELECT 1 FROM member_groups mg WHERE mg.member_id = m.id AND mg.group_id = ANY($2::uuid[])
+      ))
+    ORDER BY m.last_name, m.first_name
+    LIMIT 1500
+  `, [input.scope, input.groupIds]);
+  await database.query(`
+    INSERT INTO app_settings (key, value) VALUES ('document_export', $1)
+    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+  `, [{ identitySource: input.identitySource, template: input.template, documentSelection: input.documentSelection }]);
+
+  const records = await Promise.all(members.rows.map(async (member) => ({
+    member,
+    record: await getDocumentRecord(member.id, input.fieldKey)
+  })));
+  const available = records.filter((entry): entry is { member: ExportMember; record: DocumentRecord } => Boolean(entry.record));
+  const candidates = input.reanalyze || input.documentSelection === "all"
+    ? available
+    : available.filter(({ record }) => !record.contentHash || record.lastExportedHash !== record.contentHash);
+  job.total = candidates.length;
+  const files: Array<{ name: string; content: Buffer }> = [];
+  const report: string[][] = [["Adhérent", "Fichier", "Classement", "Résultat"]];
+  for (const { member, record } of records) {
+    if (!record) report.push([`${member.memberLastName} ${member.memberFirstName}`, "", "", "Aucun fichier"]);
+  }
+  if (!input.reanalyze && input.documentSelection === "new") {
+    for (const { member } of available.filter((entry) => !candidates.includes(entry))) {
+      report.push([`${member.memberLastName} ${member.memberFirstName}`, "", "", "Déjà exporté — non inclus"]);
+    }
+  }
+  const names = new Map<string, number>();
+  let aggregateBytes = 0;
+  for (const { member, record } of candidates) {
+    try {
+      const document = await resolveDocument(record);
+      const hash = documentHash(document);
+      const classification = field.rows[0].health
+        ? await analyzeAndSave(record, document, input.reanalyze)
+        : record.classification;
+      const pdf = await documentAsPdf(document);
+      aggregateBytes += pdf.length;
+      if (aggregateBytes > 300 * 1024 * 1024) throw new Error("L'archive dépasse la limite de 300 Mo.");
+      const base = exportBaseName(input.template, { ...member, identitySource: input.identitySource, classification });
+      const count = (names.get(base) ?? 0) + 1;
+      names.set(base, count);
+      const name = `${base}${count > 1 ? ` (${count})` : ""}.pdf`;
+      files.push({ name, content: pdf });
+      await database.query(`
+        UPDATE member_documents SET content_hash = $3, last_exported_hash = $3,
+          last_exported_at = now(), updated_at = now()
+        WHERE member_id = $1 AND field_key = $2
+      `, [record.memberId, record.fieldKey, hash]);
+      report.push([`${member.memberLastName} ${member.memberFirstName}`, name, classificationLabel(classification), "Inclus"]);
+      if (classification === "certificate") job.certificateCount += 1;
+      else if (classification === "attestation") job.attestationCount += 1;
+      else if (classification === "questionnaire") job.questionnaireCount += 1;
+      else job.unknownCount += 1;
+    } catch (error) {
+      job.unknownCount += 1;
+      report.push([`${member.memberLastName} ${member.memberFirstName}`, "", "", error instanceof Error ? error.message : "Fichier inaccessible"]);
+    } finally {
+      job.processed += 1;
+    }
+  }
+  files.push({ name: "rapport.csv", content: Buffer.from(`\uFEFF${report.map(csvRow).join("\r\n")}`, "utf8") });
+  job.archive = await zipBuffer(files);
+  job.fileName = `documents-${new Date().toISOString().slice(0, 10)}.zip`;
+  job.status = "ready";
+  job.expiresAt = Date.now() + 30 * 60_000;
+  await logDocumentAccess(userId, null, input.fieldKey, "export");
+}
+
+function ownedDocumentExportJob(id: string, owner: string) {
+  const job = documentExportJobs.get(id);
+  return job?.owner === owner && job.expiresAt > Date.now() ? job : null;
+}
+
+function documentExportStatus(job: DocumentExportJob) {
+  return {
+    exportId: job.id, status: job.status, total: job.total, processed: job.processed,
+    certificateCount: job.certificateCount, attestationCount: job.attestationCount,
+    questionnaireCount: job.questionnaireCount, unknownCount: job.unknownCount,
+    error: job.error
+  };
+}
+
+function pruneDocumentExportJobs() {
+  const now = Date.now();
+  for (const [id, job] of documentExportJobs) if (job.expiresAt <= now) documentExportJobs.delete(id);
+}
+
+async function getDocumentRecord(memberId: string, fieldKey: string) {
+  const result = await database.query<DocumentRecord>(`
+    SELECT d.member_id AS "memberId", d.field_key AS "fieldKey",
+           f.document_role = 'health' AS health,
+           d.helloasso_url AS "helloassoUrl", d.helloasso_name AS "helloassoName",
+           d.local_content AS "localContent", d.local_name AS "localName",
+           d.local_media_type AS "localMediaType", d.classification,
+           d.classification_source AS "classificationSource", d.analyzed_hash AS "analyzedHash",
+           d.content_hash AS "contentHash", d.last_exported_hash AS "lastExportedHash",
+           d.analysis_version AS "analysisVersion"
+    FROM member_documents d
+    JOIN helloasso_fields f ON f.field_key = d.field_key AND f.selected = true AND f.field_type = 'File'
+    WHERE d.member_id = $1 AND d.field_key = $2
+      AND (d.local_content IS NOT NULL OR d.helloasso_url IS NOT NULL)
+  `, [memberId, fieldKey]);
+  return result.rows[0] ?? null;
+}
+
+async function resolveDocument(record: DocumentRecord): Promise<DocumentContent> {
+  if (record.localContent) {
+    return validateDocument(record.localContent, record.localMediaType ?? "", record.localName ?? "document");
+  }
+  if (!record.helloassoUrl) throw new Error("Aucun fichier n'est disponible.");
+  const remote = await helloasso.getDocument(record.helloassoUrl);
+  const checked = validateDocument(remote.content, remote.mediaType, remote.fileName ?? record.helloassoName ?? "document");
+  const hash = documentHash(checked);
+  await database.query(`
+    UPDATE member_documents SET helloasso_name = $3, helloasso_media_type = $4,
+      helloasso_size_bytes = $5, content_hash = $6, updated_at = now()
+    WHERE member_id = $1 AND field_key = $2
+  `, [record.memberId, record.fieldKey, checked.fileName, checked.mediaType, checked.content.length, hash]);
+  return { ...checked, source: "helloasso" };
+}
+
+async function analyzeAndSave(record: DocumentRecord, document: DocumentContent, force = false) {
+  const hash = documentHash(document);
+  if (!record.health || record.classificationSource === "manual") {
+    if (record.contentHash !== hash) {
+      await database.query(
+        "UPDATE member_documents SET content_hash = $3, updated_at = now() WHERE member_id = $1 AND field_key = $2",
+        [record.memberId, record.fieldKey, hash]
+      );
+    }
+    return record.classification;
+  }
+  if (!force && record.analyzedHash === hash) {
+    return record.classification;
+  }
+  const recognition = await recognizeHealthDocument(document, hash);
+  await database.query(`
+    UPDATE member_documents SET classification = $3, classification_source = 'automatic',
+      analyzed_hash = $4, content_hash = $4, analysis_version = $5, analyzed_at = now(), updated_at = now()
+    WHERE member_id = $1 AND field_key = $2
+  `, [record.memberId, record.fieldKey, recognition.classification, recognition.hash, healthAnalysisVersion]);
+  return recognition.classification;
+}
+
+async function logDocumentAccess(
+  userId: string | null,
+  memberId: string | null,
+  fieldKey: string,
+  action: "view" | "download" | "upload" | "revert" | "classify" | "export"
+) {
+  await database.query(
+    "INSERT INTO document_access_log (member_id, field_key, user_id, action) VALUES ($1, $2, $3, $4)",
+    [memberId, fieldKey, userId, action]
+  );
+}
+
+function classificationLabel(value: DocumentClassification) {
+  if (value === "certificate") return "Certificat";
+  if (value === "attestation") return "Attestation";
+  if (value === "questionnaire") return "Questionnaire fourni à la place de l'attestation";
+  return "À classer";
+}
+
+function csvRow(values: string[]) {
+  return values.map((value) => `"${value.replaceAll('"', '""')}"`).join(";");
+}
+
+async function zipBuffer(files: Array<{ name: string; content: Buffer }>) {
+  const output = new PassThrough();
+  const chunks: Buffer[] = [];
+  output.on("data", (chunk: Buffer) => chunks.push(chunk));
+  const completed = new Promise<Buffer>((resolve, reject) => {
+    output.once("end", () => resolve(Buffer.concat(chunks)));
+    output.once("error", reject);
+  });
+  const archive = new ZipArchive({ zlib: { level: 6 } });
+  archive.once("error", (error: Error) => output.destroy(error));
+  archive.pipe(output);
+  for (const file of files) archive.append(file.content, { name: file.name });
+  await archive.finalize();
+  return completed;
 }
 
 async function shutdown(signal: string) {

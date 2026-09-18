@@ -66,11 +66,11 @@ Le prénom, le nom, la campagne, le tarif et le statut HelloAsso sont toujours c
 
 Dans **Adhérents**, le bouton **Changer** permet de sélectionner précisément les groupes d'une personne. Dans **Groupes**, un clic sur un groupe affiche sa composition exacte et permet de déplacer ou retirer chaque adhérent. Ces choix sont enregistrés uniquement dans PostgreSQL local et restent prioritaires lors des imports HelloAsso suivants.
 
-Le formulaire **Créer un groupe automatique** permet de choisir un critère provenant des données HelloAsso conservées localement — tarif, campagne ou champ facultatif sélectionné — ou la catégorie FFE calculée. Une ou plusieurs valeurs du critère peuvent alimenter le même groupe. Sa composition est recalculée après les imports et les corrections locales, sans annuler les exclusions et déplacements manuels.
+Le formulaire **Créer un groupe automatique** permet de choisir un critère provenant des données HelloAsso conservées localement — tarif, campagne ou champ supplémentaire sélectionné — ou la catégorie FFE calculée. Une ou plusieurs valeurs du critère peuvent alimenter le même groupe. Sa composition est recalculée après les imports et les corrections locales, sans annuler les exclusions et déplacements manuels.
 
 Les groupes créés hors configuration peuvent être supprimés depuis leur détail, après une confirmation explicite. Cette suppression efface uniquement le groupe et ses données associées dans la base locale ; elle ne supprime aucun adhérent et ne modifie rien dans HelloAsso. Les groupes produits par la configuration restent protégés et doivent être gérés depuis celle-ci.
 
-Un clic sur le nom d'un adhérent ouvre également sa fiche locale. Le prénom, le nom et tous les champs facultatifs sélectionnés pendant la configuration peuvent y être corrigés. Chaque valeur corrigée porte la mention **Modifié localement** et peut être restaurée individuellement avec **Revenir à HelloAsso**. Les corrections locales sont conservées lors des imports suivants et aucune donnée n'est écrite dans HelloAsso.
+Un clic sur le nom d'un adhérent ouvre également sa fiche locale. Le prénom, le nom et tous les champs supplémentaires sélectionnés pendant la configuration peuvent y être corrigés. Chaque valeur corrigée porte la mention **Modifié localement** et peut être restaurée individuellement avec **Revenir à HelloAsso**. Les corrections locales sont conservées lors des imports suivants et aucune donnée n'est écrite dans HelloAsso.
 
 ### Catégories FFE et feuilles de présence
 

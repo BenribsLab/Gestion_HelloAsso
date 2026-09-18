@@ -22,6 +22,7 @@ FROM node:24.21.0-alpine3.23 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 RUN apk upgrade --no-cache \
+    && apk add --no-cache poppler-utils tesseract-ocr tesseract-ocr-data-fra tesseract-ocr-data-osd \
     && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx /root/.npm
 COPY --from=production-dependencies /app/node_modules ./node_modules
 COPY package.json package-lock.json ./

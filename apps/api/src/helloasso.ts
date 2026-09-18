@@ -26,6 +26,7 @@ export type HelloAssoMembershipItem = {
   tierId?: number | undefined;
   user?: { firstName?: string | undefined; lastName?: string | undefined } | undefined;
   order?: { id?: number | undefined; date?: string | undefined } | undefined;
+  payer?: { firstName?: string | undefined; lastName?: string | undefined } | undefined;
   customFields: HelloAssoCustomField[];
 };
 
@@ -144,7 +145,14 @@ export function createHelloAssoClient(config: AppConfig) {
     return items;
   }
 
-  function parseMembershipItem(value: unknown): HelloAssoMembershipItem | null {
+  function parseMembershipItem(
+    value: unknown,
+    order?: {
+      id?: number | undefined;
+      date?: string | undefined;
+      payer?: { firstName?: string | undefined; lastName?: string | undefined } | undefined;
+    }
+  ): HelloAssoMembershipItem | null {
     const result = z
       .object({
         id: z.number(),
@@ -169,7 +177,62 @@ export function createHelloAssoClient(config: AppConfig) {
           .default([])
       })
       .safeParse(value);
-    return result.success ? result.data : null;
+    return result.success ? {
+      ...result.data,
+      ...(order ? {
+        order: { id: order.id, date: order.date },
+        payer: order.payer
+      } : {})
+    } : null;
+  }
+
+  async function getDocument(urlValue: string) {
+    let url = validatedDocumentUrl(urlValue);
+    for (let redirect = 0; redirect < 3; redirect += 1) {
+      const token = await getAccessToken();
+      const response = await fetch(url, {
+        headers: { authorization: `Bearer ${token}` },
+        redirect: "manual",
+        signal: AbortSignal.timeout(30_000)
+      });
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        if (!location) throw new HelloAssoError("Redirection de document HelloAsso invalide.", 502);
+        url = validatedDocumentUrl(new URL(location, url).toString());
+        continue;
+      }
+      if (!response.ok) {
+        throw new HelloAssoError(
+          response.status === 403
+            ? "HelloAsso refuse l'accès à ce document. Vérifiez les droits OrganizationAdmin de la clé API."
+            : `Impossible de récupérer le document HelloAsso (statut ${response.status}).`,
+          502
+        );
+      }
+      const declaredSize = Number(response.headers.get("content-length") ?? 0);
+      if (declaredSize > 15 * 1024 * 1024) {
+        throw new HelloAssoError("Ce document dépasse la limite de 15 Mo.", 413);
+      }
+      if (!response.body) throw new HelloAssoError("HelloAsso a renvoyé un document vide.", 502);
+      const chunks: Buffer[] = [];
+      let received = 0;
+      for await (const chunk of response.body) {
+        const value = Buffer.from(chunk);
+        received += value.length;
+        if (received > 15 * 1024 * 1024) {
+          await response.body.cancel().catch(() => undefined);
+          throw new HelloAssoError("Ce document dépasse la limite de 15 Mo.", 413);
+        }
+        chunks.push(value);
+      }
+      const content = Buffer.concat(chunks, received);
+      return {
+        content,
+        mediaType: response.headers.get("content-type")?.split(";", 1)[0] ?? "application/octet-stream",
+        fileName: contentDispositionFileName(response.headers.get("content-disposition"))
+      };
+    }
+    throw new HelloAssoError("Trop de redirections pour ce document HelloAsso.", 502);
   }
 
   return {
@@ -241,14 +304,56 @@ export function createHelloAssoClient(config: AppConfig) {
     },
 
     async listMembershipItems(formSlug: string): Promise<HelloAssoMembershipItem[]> {
-      const values = await getAllPages(
+      const [orderValues, itemValues] = await Promise.all([getAllPages(
+        `/organizations/${encodeURIComponent(config.helloasso.organizationSlug)}` +
+          `/forms/Membership/${encodeURIComponent(formSlug)}/orders?withDetails=true`
+      ), getAllPages(
         `/organizations/${encodeURIComponent(config.helloasso.organizationSlug)}` +
           `/forms/Membership/${encodeURIComponent(formSlug)}/items?withDetails=true`
-      );
-      return values.flatMap((value) => {
+      )]);
+      const items = new Map<number, HelloAssoMembershipItem>();
+      for (const value of orderValues) {
+        const order = z.object({
+          id: z.number().optional(),
+          date: z.string().optional(),
+          payer: z.object({ firstName: z.string().optional(), lastName: z.string().optional() }).optional(),
+          items: z.array(z.unknown()).default([])
+        }).safeParse(value);
+        if (!order.success) continue;
+        for (const rawItem of order.data.items) {
+          const item = parseMembershipItem(rawItem, order.data);
+          if (item) items.set(item.id, item);
+        }
+      }
+      for (const value of itemValues) {
         const item = parseMembershipItem(value);
-        return item ? [item] : [];
-      });
-    }
+        if (item && !items.has(item.id)) items.set(item.id, item);
+      }
+      return [...items.values()];
+    },
+
+    getDocument
   };
+}
+
+function validatedDocumentUrl(value: string) {
+  let url: URL;
+  try { url = new URL(value); }
+  catch { throw new HelloAssoError("La référence du document HelloAsso est invalide.", 502); }
+  const allowedHosts = new Set(["docs.helloasso.com", "docs.helloasso-sandbox.com"]);
+  if (url.protocol !== "https:" || !allowedHosts.has(url.hostname) || !/^\/customFieldsAnswer\/\d+\/?$/.test(url.pathname)) {
+    throw new HelloAssoError("L'adresse du document HelloAsso a été refusée.", 502);
+  }
+  url.search = "";
+  url.hash = "";
+  return url;
+}
+
+function contentDispositionFileName(value: string | null) {
+  if (!value) return null;
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(value)?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded); } catch { /* valeur de repli ci-dessous */ }
+  }
+  return /filename="?([^";]+)"?/i.exec(value)?.[1]?.trim() ?? null;
 }

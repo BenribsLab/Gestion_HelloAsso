@@ -77,9 +77,11 @@ export async function getSetupState(database: Database) {
       label: string;
       type: string;
       selected: boolean;
+      documentRole: "health" | null;
       campaignCount: number;
     }>(`
       SELECT f.field_key AS key, f.label, f.field_type AS type, f.selected,
+             f.document_role AS "documentRole",
              count(cf.form_slug)::int AS "campaignCount"
       FROM helloasso_fields f
       JOIN helloasso_campaign_fields cf ON cf.field_key = f.field_key
@@ -236,7 +238,7 @@ export async function selectCampaigns(
   return getSetupState(database);
 }
 
-export async function selectFields(database: Database, keys: string[]) {
+export async function selectFields(database: Database, keys: string[], healthDocumentFieldKey: string | null) {
   const known = await database.query<{ key: string }>(
     `SELECT DISTINCT f.field_key AS key
      FROM helloasso_fields f
@@ -248,15 +250,42 @@ export async function selectFields(database: Database, keys: string[]) {
   if (known.rows.length !== new Set(keys).size) {
     throw new Error("Un champ sélectionné n'est pas connu.");
   }
+  let resolvedHealthDocumentFieldKey = healthDocumentFieldKey;
+  if (!resolvedHealthDocumentFieldKey && keys.length > 0) {
+    const candidates = await database.query<{ key: string; label: string }>(
+      `SELECT field_key AS key, label FROM helloasso_fields
+       WHERE field_key = ANY($1::text[]) AND field_type = 'File'
+       ORDER BY label`,
+      [keys]
+    );
+    const healthCandidates = candidates.rows.filter((field) => isHealthDocumentLabel(field.label));
+    if (healthCandidates.length === 1) resolvedHealthDocumentFieldKey = healthCandidates[0]!.key;
+  }
+  if (resolvedHealthDocumentFieldKey) {
+    const healthField = await database.query(
+      `SELECT 1 FROM helloasso_fields
+       WHERE field_key = $1 AND field_type = 'File' AND field_key = ANY($2::text[])`,
+      [resolvedHealthDocumentFieldKey, keys]
+    );
+    if (!healthField.rows[0]) {
+      throw new Error("Le champ santé doit être un document sélectionné.");
+    }
+  }
 
   const client = await database.connect();
   try {
     await client.query("BEGIN");
-    await client.query("UPDATE helloasso_fields SET selected = false, updated_at = now()");
+    await client.query("UPDATE helloasso_fields SET selected = false, document_role = NULL, updated_at = now()");
     if (keys.length > 0) {
       await client.query(
         "UPDATE helloasso_fields SET selected = true, updated_at = now() WHERE field_key = ANY($1::text[])",
         [keys]
+      );
+    }
+    if (resolvedHealthDocumentFieldKey) {
+      await client.query(
+        "UPDATE helloasso_fields SET document_role = 'health', updated_at = now() WHERE field_key = $1",
+        [resolvedHealthDocumentFieldKey]
       );
     }
     await client.query(
@@ -417,8 +446,9 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
     key: string;
     label: string;
     type: string;
+    documentRole: "health" | null;
   }>(`
-    SELECT field_key AS key, label, field_type AS type
+    SELECT field_key AS key, label, field_type AS type, document_role AS "documentRole"
     FROM helloasso_fields WHERE selected = true
   `);
   const selectedFields = new Map(
@@ -504,6 +534,7 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
           let email: string | null = null;
           let phone: string | null = null;
           let birthDate: string | null = null;
+          const documentAnswers: Array<{ fieldKey: string; url: string }> = [];
           for (const answer of item.customFields) {
             const groupingFieldKey = customFieldKeyByIdentity.get(
               `${answer.type}\0${answer.name}`
@@ -520,6 +551,11 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
             }
             const selected = selectedFields.get(`${answer.type}\0${answer.name}`);
             if (!selected) continue;
+            if (selected.type === "File") {
+              const url = documentAnswerUrl(answer.answer);
+              if (url) documentAnswers.push({ fieldKey: selected.key, url });
+              continue;
+            }
             profileData[selected.key] = answer.answer;
             if (/e-?mail|courriel/.test(normalizedLabel)) email = answerToString(answer.answer);
             if (answer.type === "Phone" && /telephone 1/.test(normalizedLabel)) {
@@ -556,11 +592,57 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
                 helloassoState: item.state,
                 amount: item.amount ?? null,
                 orderId: item.order?.id ?? null,
-                orderDate: item.order?.date ?? null
+                orderDate: item.order?.date ?? null,
+                payerFirstName: item.payer?.firstName ?? null,
+                payerLastName: item.payer?.lastName ?? null
               },
               profileData
             ]
           );
+          for (const fileField of fieldsResult.rows.filter((field) => field.type === "File")) {
+            const document = documentAnswers.find((answer) => answer.fieldKey === fileField.key);
+            await client.query(
+              `INSERT INTO member_documents (member_id, field_key, helloasso_url)
+               VALUES ($1, $2, $3)
+               ON CONFLICT (member_id, field_key) DO UPDATE SET
+                 helloasso_url = EXCLUDED.helloasso_url,
+                 helloasso_name = CASE
+                   WHEN member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.helloasso_name ELSE NULL END,
+                 helloasso_media_type = CASE
+                   WHEN member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.helloasso_media_type ELSE NULL END,
+                 helloasso_size_bytes = CASE
+                   WHEN member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.helloasso_size_bytes ELSE NULL END,
+                 classification = CASE
+                   WHEN member_documents.local_content IS NOT NULL
+                     OR member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.classification ELSE 'unknown' END,
+                 classification_source = CASE
+                   WHEN member_documents.local_content IS NOT NULL
+                     OR member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.classification_source ELSE 'automatic' END,
+                 analyzed_hash = CASE
+                   WHEN member_documents.local_content IS NOT NULL
+                     OR member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.analyzed_hash ELSE NULL END,
+                 analyzed_at = CASE
+                   WHEN member_documents.local_content IS NOT NULL
+                     OR member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.analyzed_at ELSE NULL END,
+                 content_hash = CASE
+                   WHEN member_documents.local_content IS NOT NULL
+                     OR member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.content_hash ELSE NULL END,
+                 analysis_version = CASE
+                   WHEN member_documents.local_content IS NOT NULL
+                     OR member_documents.helloasso_url IS NOT DISTINCT FROM EXCLUDED.helloasso_url
+                   THEN member_documents.analysis_version ELSE 0 END,
+                 updated_at = now()`,
+              [memberResult.rows[0]!.id, fileField.key, document?.url ?? null]
+            );
+          }
           for (const definition of groupDefinitions.values()) {
             const matches = definition.rules.some((rule) =>
               groupingValues.get(rule.fieldKey)?.has(rule.value)
@@ -636,6 +718,11 @@ function normalizeLabel(value: string) {
     .trim();
 }
 
+function isHealthDocumentLabel(value: string) {
+  const label = normalizeLabel(value);
+  return /certificat|attestation|questionnaire.*sante/.test(label);
+}
+
 function answerToString(answer: unknown) {
   if (typeof answer === "string") return answer.trim() || null;
   if (typeof answer === "number") return String(answer);
@@ -653,9 +740,21 @@ async function getAvailableGroupingFields(database: Database) {
     FROM helloasso_fields f
     JOIN helloasso_campaign_fields cf ON cf.field_key = f.field_key
     JOIN helloasso_campaigns c ON c.form_slug = cf.form_slug AND c.selected = true
+    WHERE f.field_type <> 'File'
     ORDER BY f.label
   `);
   return [{ key: "tier", label: "Tarif choisi", type: "Tier" }, ...result.rows];
+}
+
+function documentAnswerUrl(answer: unknown) {
+  if (typeof answer === "string" && /^https:\/\//i.test(answer.trim())) return answer.trim();
+  if (answer && typeof answer === "object") {
+    for (const key of ["url", "fileUrl", "downloadUrl"]) {
+      const value = (answer as Record<string, unknown>)[key];
+      if (typeof value === "string" && /^https:\/\//i.test(value.trim())) return value.trim();
+    }
+  }
+  return null;
 }
 
 function addPreviewValues(

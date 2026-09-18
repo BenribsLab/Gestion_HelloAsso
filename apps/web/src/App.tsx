@@ -2,7 +2,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef
 import { api, type AttendanceRecord, type AttendanceSheet, type AuthUser, type CategoryConfiguration, type DashboardData, type EmailMessageHistory, type EmailStatus, type EmailTarget, type Group, type GroupCriterion, type ManagedUser, type Member, type SchoolHoliday, type TrainingSchedule } from "./api";
 import { Setup } from "./Setup";
 
-type View = "dashboard" | "members" | "categories" | "groups" | "messages" | "attendance" | "setup";
+type View = "dashboard" | "members" | "categories" | "groups" | "documents" | "messages" | "attendance" | "setup";
 type MemberDraft = {
   firstName: string;
   lastName: string;
@@ -263,6 +263,9 @@ export function App() {
           <NavButton active={view === "groups"} onClick={() => navigate("groups")}>
             Groupes
           </NavButton>
+          <NavButton active={view === "documents"} onClick={() => navigate("documents")}>
+            Documents
+          </NavButton>
           <NavButton active={view === "messages"} onClick={() => navigate("messages")}>
             Messages
           </NavButton>
@@ -298,7 +301,7 @@ export function App() {
                 onCheckConnection={() => void checkConnection()}
               />
             )}
-            {view === "members" && <Members members={members} groups={groups} savingMemberId={savingMemberId} onSaveMember={updateMember} onRevertField={revertMemberField} onComposeEmail={composeEmail} />}
+            {view === "members" && <Members members={members} groups={groups} savingMemberId={savingMemberId} onSaveMember={updateMember} onRevertField={revertMemberField} onDocumentsChanged={loadData} onComposeEmail={composeEmail} />}
             {view === "categories" && categoryConfiguration && <Categories configuration={categoryConfiguration} onChanged={loadData} />}
             {view === "groups" && (
               <Groups
@@ -324,10 +327,12 @@ export function App() {
                 onMoveMember={updateMemberGroups}
                 onSaveMember={updateMember}
                 onRevertField={revertMemberField}
+                onDocumentsChanged={loadData}
                 onSaveSchedules={updateGroupSchedules}
                 onComposeEmail={composeEmail}
               />
             )}
+            {view === "documents" && <Documents groups={groups} />}
             {view === "messages" && <Messages groups={groups} initialRecipient={messageRecipient} />}
             {view === "attendance" && <Attendance groups={groups} />}
             {view === "setup" && dashboard && (
@@ -580,8 +585,32 @@ function memberContactLabel(member: Pick<Member, "email" | "phone">) {
   return member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "Sans contact");
 }
 
-function memberMembershipLabel(member: Pick<Member, "tierName" | "campaignTitle" | "source">) {
-  return member.tierName ?? member.campaignTitle ?? (member.source === "helloasso" ? "HelloAsso" : "Manuel");
+type HealthDocumentState = {
+  label: string;
+  tone: "valid" | "warning" | "unknown" | "missing";
+};
+
+function memberHealthDocumentState(member: Pick<Member, "customFields">): HealthDocumentState {
+  const configured = member.customFields
+    .map((field) => field.document)
+    .filter((document) => document?.health);
+  const available = configured.filter((document) => document?.available);
+  if (available.some((document) => document?.classification === "certificate")) {
+    return { label: "Certificat", tone: "valid" };
+  }
+  if (available.some((document) => document?.classification === "attestation")) {
+    return { label: "Attestation", tone: "valid" };
+  }
+  if (available.some((document) => document?.classification === "questionnaire")) {
+    return { label: "Questionnaire à remplacer", tone: "warning" };
+  }
+  if (available.length > 0) return { label: "Document à classer", tone: "unknown" };
+  return { label: configured.length > 0 ? "Non fourni" : "Non configuré", tone: "missing" };
+}
+
+function HealthDocumentBadge({ member }: { member: Pick<Member, "customFields"> }) {
+  const state = memberHealthDocumentState(member);
+  return <span className={`health-document-badge ${state.tone}`}>{state.label}</span>;
 }
 
 function formatPhoneNumber(value: string) {
@@ -777,6 +806,7 @@ function Members({
   savingMemberId,
   onSaveMember,
   onRevertField,
+  onDocumentsChanged,
   onComposeEmail
 }: {
   members: Member[];
@@ -784,6 +814,7 @@ function Members({
   savingMemberId: string | null;
   onSaveMember: (memberId: string, draft: MemberDraft, groupIds: string[]) => Promise<void>;
   onRevertField: (memberId: string, fieldKey: string) => Promise<void>;
+  onDocumentsChanged: () => Promise<void>;
   onComposeEmail: (member: Member) => void;
 }) {
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
@@ -795,13 +826,13 @@ function Members({
   const [filters, setFilters] = useState({
     name: "",
     category: new Set<string>(),
-    membership: new Set<string>(),
+    healthDocument: new Set<string>(),
     groups: new Set<string>()
   });
   const editingMember = members.find((member) => member.id === editingMemberId) ?? null;
   const filterOptions = useMemo(() => ({
     category: uniqueSorted(members.map(memberCategoryLabel)),
-    membership: uniqueSorted(members.map(memberMembershipLabel)),
+    healthDocument: uniqueSorted(members.map((member) => memberHealthDocumentState(member).label)),
     groups: uniqueSorted(members.flatMap((member) => member.groups.length ? member.groups.map((group) => group.name) : ["Aucun groupe"]))
   }), [members]);
   const filteredMembers = useMemo(() => members.filter((member) => {
@@ -809,13 +840,13 @@ function Members({
       name: `${member.lastName} ${member.firstName}`,
       category: memberCategoryLabel(member),
       contact: memberContactLabel(member),
-      membership: memberMembershipLabel(member),
+      healthDocument: memberHealthDocumentState(member).label,
       groups: member.groups.length ? member.groups.map((group) => group.name) : ["Aucun groupe"]
     };
-    return includesText([values.name, values.category, values.contact, values.membership, ...values.groups].join(" "), search)
+    return includesText([values.name, values.category, values.contact, values.healthDocument, ...values.groups].join(" "), search)
       && includesText(values.name, filters.name)
       && matchesSelected([values.category], filters.category)
-      && matchesSelected([values.membership], filters.membership)
+      && matchesSelected([values.healthDocument], filters.healthDocument)
       && matchesSelected(values.groups, filters.groups);
   }), [members, search, filters]);
   const pageCount = Math.max(1, Math.ceil(filteredMembers.length / pageSize));
@@ -875,12 +906,12 @@ function Members({
           <div className="table-wrap data-table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Nom</th><th>Catégorie FFE</th><th>Contact</th><th>Adhésion</th><th>Groupes</th><th /></tr>
+              <tr><th>Nom</th><th>Catégorie FFE</th><th>Contact</th><th>Document santé</th><th>Groupes</th><th /></tr>
               <tr className="filter-row">
                 <th><FilterInput label="Filtrer par nom" value={filters.name} onChange={(name) => setFilters((current) => ({ ...current, name }))} /></th>
                 <th><ChoiceFilter label="Catégorie" options={filterOptions.category} selection={filters.category} onToggle={(value) => setFilters((current) => ({ ...current, category: toggledSet(current.category, value) }))} onClear={() => setFilters((current) => ({ ...current, category: new Set() }))} /></th>
                 <th />
-                <th><ChoiceFilter label="Adhésion" options={filterOptions.membership} selection={filters.membership} onToggle={(value) => setFilters((current) => ({ ...current, membership: toggledSet(current.membership, value) }))} onClear={() => setFilters((current) => ({ ...current, membership: new Set() }))} /></th>
+                <th><ChoiceFilter label="Document santé" options={filterOptions.healthDocument} selection={filters.healthDocument} onToggle={(value) => setFilters((current) => ({ ...current, healthDocument: toggledSet(current.healthDocument, value) }))} onClear={() => setFilters((current) => ({ ...current, healthDocument: new Set() }))} /></th>
                 <th><ChoiceFilter label="Groupes" options={filterOptions.groups} selection={filters.groups} onToggle={(value) => setFilters((current) => ({ ...current, groups: toggledSet(current.groups, value) }))} onClear={() => setFilters((current) => ({ ...current, groups: new Set() }))} /></th>
                 <th />
               </tr>
@@ -890,7 +921,7 @@ function Members({
                 <td><button className="member-name-button" type="button" onClick={() => edit(member)}><strong>{member.lastName} {member.firstName}</strong></button></td>
                 <td><CategoryBadge member={member} /></td>
                 <td>{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "—")}</td>
-                <td><span className="member-campaign">{member.tierName ?? member.campaignTitle ?? (member.source === "helloasso" ? "HelloAsso" : "Manuel")}</span></td>
+                <td><HealthDocumentBadge member={member} /></td>
                 <td><GroupBadges groups={member.groups} /></td>
                 <td className="row-action"><span className="row-chevron" aria-hidden="true">›</span></td>
               </tr>)}
@@ -918,6 +949,7 @@ function Members({
           onCancel={() => setEditingMemberId(null)}
           onSave={() => void save(editingMember.id)}
           onRevert={(fieldKey) => void revert(editingMember.id, fieldKey)}
+          onDocumentsChanged={onDocumentsChanged}
           onComposeEmail={() => onComposeEmail(editingMember)}
         />
       </Modal>}
@@ -936,6 +968,7 @@ function MemberEditor({
   onCancel,
   onSave,
   onRevert,
+  onDocumentsChanged,
   onComposeEmail
 }: {
   member: Member;
@@ -948,6 +981,7 @@ function MemberEditor({
   onCancel: () => void;
   onSave: () => void;
   onRevert: (fieldKey: string) => void;
+  onDocumentsChanged: () => Promise<void>;
   onComposeEmail: () => void;
 }) {
   const change = (patch: Partial<MemberDraft>) => onDraftChange({ ...draft, ...patch });
@@ -961,12 +995,14 @@ function MemberEditor({
       <label><FieldLabel label="Nom" overridden={member.overriddenFields.includes("lastName")} saving={saving} onRevert={() => onRevert("lastName")} /><input required value={draft.lastName} onChange={(event) => change({ lastName: event.target.value })} /></label>
     </div>
     <div className="custom-fields-section">
-      <div><strong>Champs facultatifs sélectionnés</strong><p>{member.customFields.length} champ{member.customFields.length > 1 ? "s" : ""} conservé{member.customFields.length > 1 ? "s" : ""} depuis la configuration.</p></div>
-      {member.customFields.length === 0 ? <p className="empty-inline">Aucun champ facultatif n'est sélectionné dans la configuration.</p> : <div className="custom-fields-grid">
-        {member.customFields.map((field) => <label key={field.key}>
-          <FieldLabel label={field.label} overridden={field.overridden} saving={saving} onRevert={() => onRevert(field.key)} />
-          <CustomFieldInput field={field} value={draft.customValues[field.key] ?? ""} onChange={(value) => changeCustom(field.key, value)} />
-        </label>)}
+      <div><strong>Champs supplémentaires sélectionnés</strong><p>{member.customFields.length} champ{member.customFields.length > 1 ? "s" : ""} conservé{member.customFields.length > 1 ? "s" : ""} depuis la configuration.</p></div>
+      {member.customFields.length === 0 ? <p className="empty-inline">Aucun champ supplémentaire n'est sélectionné dans la configuration.</p> : <div className="custom-fields-grid">
+        {member.customFields.map((field) => field.type === "File"
+          ? <MemberDocument key={field.key} member={member} field={field} onChanged={onDocumentsChanged} />
+          : <label key={field.key}>
+            <FieldLabel label={field.label} overridden={field.overridden} saving={saving} onRevert={() => onRevert(field.key)} />
+            <CustomFieldInput field={field} value={draft.customValues[field.key] ?? ""} onChange={(value) => changeCustom(field.key, value)} />
+          </label>)}
       </div>}
     </div>
     <div><strong>Groupes</strong><GroupCheckboxes groups={groups} selection={selection} onToggle={onToggle} /></div>
@@ -992,6 +1028,58 @@ function CustomFieldInput({ field, value, onChange }: { field: Member["customFie
   return <input value={value} onChange={(event) => onChange(event.target.value)} />;
 }
 
+function MemberDocument({ member, field, onChanged }: {
+  member: Member;
+  field: Member["customFields"][number];
+  onChanged: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const document = field.document;
+  const classification = document?.classification ?? "unknown";
+
+  async function upload(file: File | undefined) {
+    if (!file) return;
+    setBusy(true); setError(null);
+    try {
+      await api.uploadMemberDocument(member.id, field.key, file);
+      await onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Impossible d'ajouter le document.");
+    } finally { setBusy(false); }
+  }
+
+  async function classify(value: "certificate" | "attestation" | "questionnaire" | "unknown") {
+    setBusy(true); setError(null);
+    try { await api.classifyMemberDocument(member.id, field.key, value); await onChanged(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Classement impossible."); }
+    finally { setBusy(false); }
+  }
+
+  async function revert() {
+    if (!document?.source || document.source !== "local") return;
+    const text = document.hasHelloAssoOriginal
+      ? "Supprimer le fichier local et revenir au document HelloAsso ?"
+      : "Supprimer ce fichier local ? Aucun document HelloAsso n'est disponible derrière.";
+    if (!window.confirm(text)) return;
+    setBusy(true); setError(null);
+    try { await api.revertMemberDocument(member.id, field.key); await onChanged(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Suppression impossible."); }
+    finally { setBusy(false); }
+  }
+
+  return <div className="member-document-field">
+    <div className="field-label-row"><span>{field.label}</span>{document?.health && <span className="document-role">Document santé</span>}</div>
+    {document?.available ? <div className="document-current">
+      <div><strong>{document.fileName || "Document fourni"}</strong><small>{document.source === "local" ? "Fichier local prioritaire" : "Fichier HelloAsso"}{document.sizeBytes ? ` · ${formatBytes(document.sizeBytes)}` : ""}</small></div>
+      <div className="document-actions"><a className="secondary compact-button" href={api.memberDocumentUrl(member.id, field.key)} target="_blank" rel="noreferrer">Voir</a><a className="secondary compact-button" href={api.memberDocumentUrl(member.id, field.key, true)}>Télécharger</a></div>
+    </div> : <p className="empty-inline">Aucun fichier fourni.</p>}
+    {document?.health && document.available && <label className={`document-classification ${classification === "questionnaire" ? "document-warning" : ""}`}>Type reconnu<select disabled={busy} value={classification} onChange={(event) => void classify(event.target.value as "certificate" | "attestation" | "questionnaire" | "unknown")}><option value="unknown">À classer</option><option value="certificate">Certificat médical</option><option value="attestation">Attestation de santé valide</option><option value="questionnaire">Erreur : questionnaire fourni à la place de l’attestation</option></select><small>{classification === "questionnaire" ? "Le questionnaire contient des données de santé et ne remplace pas l’attestation demandée." : document.classificationSource === "manual" ? "Classement corrigé manuellement" : "Reconnaissance automatique, modifiable"}</small></label>}
+    <div className="document-local-actions"><label className="secondary compact-button file-button">{busy ? "Traitement…" : document?.available ? "Ajouter / remplacer localement" : "Ajouter localement"}<input type="file" accept="application/pdf,image/jpeg,image/png" disabled={busy} onChange={(event) => void upload(event.currentTarget.files?.[0])} /></label>{document?.source === "local" && <button className="revert-button" type="button" disabled={busy} onClick={() => void revert()}>{document.hasHelloAssoOriginal ? "Revenir à HelloAsso" : "Supprimer le fichier local"}</button>}</div>
+    {error && <small className="field-error">{error}</small>}
+  </div>;
+}
+
 function CategoryBadge({ member }: { member: Pick<Member, "fencingCategory" | "categoryError"> }) {
   if (member.categoryError) return <span className="category-badge error" title={member.categoryError}>À corriger</span>;
   return member.fencingCategory ? <span className="category-badge">{member.fencingCategory}</span> : <span className="category-badge error">À corriger</span>;
@@ -1015,6 +1103,7 @@ function memberChanges(member: Member, draft: MemberDraft) {
   if (draft.lastName.trim() !== member.lastName) changes.lastName = draft.lastName.trim();
   const profileData: Record<string, string | number | boolean | null> = {};
   for (const field of member.customFields) {
+    if (field.type === "File") continue;
     const value = draft.customValues[field.key] ?? "";
     if (value === customFieldInputValue(field)) continue;
     const type = field.type.toLocaleLowerCase("fr");
@@ -1060,6 +1149,7 @@ function Groups({
   onMoveMember,
   onSaveMember,
   onRevertField,
+  onDocumentsChanged,
   onSaveSchedules,
   onComposeEmail
 }: {
@@ -1085,6 +1175,7 @@ function Groups({
   onMoveMember: (memberId: string, groupIds: string[]) => Promise<void>;
   onSaveMember: (memberId: string, draft: MemberDraft, groupIds: string[]) => Promise<void>;
   onRevertField: (memberId: string, fieldKey: string) => Promise<void>;
+  onDocumentsChanged: () => Promise<void>;
   onSaveSchedules: (groupId: string, schedules: TrainingSchedule[]) => Promise<void>;
   onComposeEmail: (member: Member) => void;
 }) {
@@ -1100,7 +1191,7 @@ function Groups({
   const [memberFilters, setMemberFilters] = useState({
     name: "",
     category: new Set<string>(),
-    membership: new Set<string>(),
+    healthDocument: new Set<string>(),
     groups: new Set<string>()
   });
   const selectedCriterion = groupCriteria.find((criterion) => criterion.key === groupCriterionKey) ?? null;
@@ -1110,7 +1201,7 @@ function Groups({
     : [];
   const groupMemberFilterOptions = {
     category: uniqueSorted(groupMembers.map(memberCategoryLabel)),
-    membership: uniqueSorted(groupMembers.map(memberMembershipLabel)),
+    healthDocument: uniqueSorted(groupMembers.map((member) => memberHealthDocumentState(member).label)),
     groups: uniqueSorted(groupMembers.flatMap((member) => {
       const others = member.groups.filter((group) => group.id !== selectedGroup?.id);
       return others.length ? others.map((group) => group.name) : ["Aucun autre groupe"];
@@ -1121,13 +1212,13 @@ function Groups({
     const values = {
       name: `${member.lastName} ${member.firstName} ${member.email ?? ""} ${member.phone ?? ""}`,
       category: memberCategoryLabel(member),
-      membership: memberMembershipLabel(member),
+      healthDocument: memberHealthDocumentState(member).label,
       groups: otherGroups.length ? otherGroups.map((group) => group.name) : ["Aucun autre groupe"]
     };
-    return includesText([values.name, values.category, values.membership, ...values.groups].join(" "), memberSearch)
+    return includesText([values.name, values.category, values.healthDocument, ...values.groups].join(" "), memberSearch)
       && includesText(values.name, memberFilters.name)
       && matchesSelected([values.category], memberFilters.category)
-      && matchesSelected([values.membership], memberFilters.membership)
+      && matchesSelected([values.healthDocument], memberFilters.healthDocument)
       && matchesSelected(values.groups, memberFilters.groups);
   });
   const groupMemberPageCount = Math.max(1, Math.ceil(filteredGroupMembers.length / memberPageSize));
@@ -1140,7 +1231,7 @@ function Groups({
     setGroupTab("members");
     setMemberSearch("");
     setMemberPage(1);
-    setMemberFilters({ name: "", category: new Set(), membership: new Set(), groups: new Set() });
+    setMemberFilters({ name: "", category: new Set(), healthDocument: new Set(), groups: new Set() });
     setEditingMemberId(null);
   }, [selectedGroupId]);
 
@@ -1229,10 +1320,10 @@ function Groups({
             <ListSearch value={memberSearch} onChange={setMemberSearch} placeholder="Rechercher dans ce groupe…" />
             <Pagination page={memberPage} pageSize={memberPageSize} total={filteredGroupMembers.length} onPageChange={setMemberPage} onPageSizeChange={setMemberPageSize} />
             <div className="table-wrap modal-table-wrap"><table className="data-table">
-              <thead><tr><th>Adhérent</th><th>Catégorie</th><th>Adhésion</th><th>Autres groupes</th><th>Destination</th><th /></tr><tr className="filter-row">
+              <thead><tr><th>Adhérent</th><th>Catégorie</th><th>Document santé</th><th>Autres groupes</th><th>Destination</th><th /></tr><tr className="filter-row">
                 <th><FilterInput label="Filtrer par nom" value={memberFilters.name} onChange={(name) => setMemberFilters((current) => ({ ...current, name }))} /></th>
                 <th><ChoiceFilter label="Catégorie" options={groupMemberFilterOptions.category} selection={memberFilters.category} onToggle={(value) => setMemberFilters((current) => ({ ...current, category: toggledSet(current.category, value) }))} onClear={() => setMemberFilters((current) => ({ ...current, category: new Set() }))} /></th>
-                <th><ChoiceFilter label="Adhésion" options={groupMemberFilterOptions.membership} selection={memberFilters.membership} onToggle={(value) => setMemberFilters((current) => ({ ...current, membership: toggledSet(current.membership, value) }))} onClear={() => setMemberFilters((current) => ({ ...current, membership: new Set() }))} /></th>
+                <th><ChoiceFilter label="Document santé" options={groupMemberFilterOptions.healthDocument} selection={memberFilters.healthDocument} onToggle={(value) => setMemberFilters((current) => ({ ...current, healthDocument: toggledSet(current.healthDocument, value) }))} onClear={() => setMemberFilters((current) => ({ ...current, healthDocument: new Set() }))} /></th>
                 <th><ChoiceFilter label="Autres groupes" options={groupMemberFilterOptions.groups} selection={memberFilters.groups} onToggle={(value) => setMemberFilters((current) => ({ ...current, groups: toggledSet(current.groups, value) }))} onClear={() => setMemberFilters((current) => ({ ...current, groups: new Set() }))} /></th><th /><th />
               </tr></thead>
               <tbody>{visibleGroupMembers.map((member) => {
@@ -1240,7 +1331,7 @@ function Groups({
                 return <tr key={member.id}>
                   <td><button className="member-name-button" type="button" onClick={() => editMember(member)}><strong>{member.lastName} {member.firstName}</strong></button><small className="member-contact">{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "Sans contact")}</small></td>
                   <td><CategoryBadge member={member} /></td>
-                  <td><span className="member-campaign">{member.tierName ?? member.campaignTitle ?? "—"}</span></td>
+                  <td><HealthDocumentBadge member={member} /></td>
                   <td><GroupBadges groups={member.groups.filter((group) => group.id !== selectedGroup.id)} /></td>
                   <td><select value={targetId} onChange={(event) => setTargets((current) => ({ ...current, [member.id]: event.target.value }))}><option value="">Retirer du groupe</option>{groups.filter((group) => group.id !== selectedGroup.id).map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></td>
                   <td className="row-action"><button className="secondary compact-button" type="button" disabled={savingMemberId === member.id} onClick={() => void moveMember(member)}>{savingMemberId === member.id ? "…" : targetId ? "Déplacer" : "Retirer"}</button></td>
@@ -1259,7 +1350,7 @@ function Groups({
 
       {editingMemberId && editingDraft && (() => {
         const member = members.find((item) => item.id === editingMemberId);
-        return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onComposeEmail={() => onComposeEmail(member)} /></Modal> : null;
+        return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onDocumentsChanged={onDocumentsChanged} onComposeEmail={() => onComposeEmail(member)} /></Modal> : null;
       })()}
     </div>
   );
@@ -1304,6 +1395,67 @@ function TrainingSchedules({ group, saving, onSave }: { group: Group; saving: bo
       <button className="danger-link" type="button" onClick={() => setSchedules((current) => current.filter((_, position) => position !== index))}>Supprimer</button>
     </div>)}</div>}
     <div className="editor-actions"><button className="primary" type="button" disabled={saving || invalid} onClick={() => void onSave(schedules)}>{saving ? "Enregistrement…" : "Enregistrer les créneaux"}</button></div>
+  </div>;
+}
+
+function Documents({ groups }: { groups: Group[] }) {
+  const [config, setConfig] = useState<Awaited<ReturnType<typeof api.documentConfig>> | null>(null);
+  const [fieldKey, setFieldKey] = useState("");
+  const [scope, setScope] = useState<"all" | "groups">("all");
+  const [groupIds, setGroupIds] = useState<Set<string>>(new Set());
+  const [documentSelection, setDocumentSelection] = useState<"new" | "all">("all");
+  const [reanalyze, setReanalyze] = useState(false);
+  const [identitySource, setIdentitySource] = useState<"member" | "payer">("member");
+  const [template, setTemplate] = useState("{nom}-{prenom} - {type_document}");
+  const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState<Awaited<ReturnType<typeof api.documentExportStatus>> | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void api.documentConfig().then((result) => {
+      setConfig(result); setFieldKey(result.fields[0]?.key ?? "");
+      setIdentitySource(result.identitySource); setTemplate(result.template);
+      setDocumentSelection(result.documentSelection);
+    }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Configuration indisponible."));
+  }, []);
+
+  async function download(event: FormEvent) {
+    event.preventDefault(); setBusy(true); setError(null); setProgress(null);
+    try {
+      const started = await api.startDocumentExport({ fieldKey, scope, groupIds: [...groupIds], identitySource, template, documentSelection, reanalyze });
+      let status: Awaited<ReturnType<typeof api.documentExportStatus>>;
+      do {
+        await new Promise((resolve) => window.setTimeout(resolve, 600));
+        status = await api.documentExportStatus(started.exportId);
+        setProgress(status);
+        if (status.status === "failed") throw new Error(status.error ?? "La préparation de l'archive a échoué.");
+      } while (status.status !== "ready");
+      const result = await api.downloadDocumentExport(started.exportId);
+      const url = URL.createObjectURL(result.blob);
+      const link = window.document.createElement("a");
+      link.href = url; link.download = result.fileName ?? "documents.zip"; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      setConfig(await api.documentConfig());
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Impossible de créer l'archive.");
+    } finally { setBusy(false); }
+  }
+
+  if (!config) return <section className="panel"><p>{error ?? "Chargement des documents…"}</p></section>;
+  return <div className="documents-page">
+    {error && <div className="alert error">{error}</div>}
+    <section className="panel">
+      <div className="section-heading"><div><p className="eyebrow">Fichiers des adhérents</p><h2>Télécharger les documents</h2><p className="muted">Les images sont converties en PDF. L’archive contient aussi un rapport des fichiers absents ou inaccessibles.</p></div></div>
+      {config.fields.length === 0 ? <EmptyState title="Aucun champ document" text="Dans Configuration, sélectionnez d’abord un champ HelloAsso de type Document." /> : <form className="document-export-form" onSubmit={(event) => void download(event)}>
+        <label>Document à exporter<select required value={fieldKey} onChange={(event) => setFieldKey(event.target.value)}>{config.fields.map((field) => <option key={field.key} value={field.key}>{field.label} · {field.availableCount} fichier{field.availableCount > 1 ? "s" : ""} · {field.newCount} nouveau{field.newCount !== 1 ? "x" : ""}{field.health ? " · santé" : ""}</option>)}</select></label>
+        <fieldset><legend>Adhérents concernés</legend><label className="radio-line"><input type="radio" checked={scope === "all"} onChange={() => setScope("all")} /> Tous les adhérents actifs</label><label className="radio-line"><input type="radio" checked={scope === "groups"} onChange={() => setScope("groups")} /> Un ou plusieurs groupes</label>{scope === "groups" && <div className="group-checkboxes">{groups.map((group) => <label key={group.id}><input type="checkbox" checked={groupIds.has(group.id)} onChange={() => setGroupIds((current) => toggledSet(current, group.id))} /><span>{group.name} <small>({group.membersCount})</small></span></label>)}</div>}</fieldset>
+        <fieldset><legend>Fichiers à inclure</legend><label className="radio-line"><input type="radio" checked={documentSelection === "new" && !reanalyze} onChange={() => { setDocumentSelection("new"); setReanalyze(false); }} /> Seulement les nouveaux fichiers jamais exportés</label><label className="radio-line"><input type="radio" checked={documentSelection === "all" && !reanalyze} onChange={() => { setDocumentSelection("all"); setReanalyze(false); }} /> Tous les fichiers, sans recommencer les reconnaissances déjà faites</label><label className="radio-line reanalyze-option"><input type="checkbox" checked={reanalyze} onChange={(event) => { setReanalyze(event.target.checked); if (event.target.checked) setDocumentSelection("all"); }} /> Tout retraiter avec l’OCR <small>(les corrections manuelles sont conservées)</small></label></fieldset>
+        <div className="document-naming"><label>Nom utilisé<select value={identitySource} onChange={(event) => setIdentitySource(event.target.value as "member" | "payer")}><option value="member">Nom de l’adhérent</option><option value="payer">Nom du payeur (sinon adhérent)</option></select></label><label>Nomenclature<input required value={template} onChange={(event) => setTemplate(event.target.value)} /><small>Variables : {"{nom}"}, {"{prenom}"}, {"{type_document}"}. L’extension .pdf est ajoutée automatiquement.</small></label></div>
+        <div className="document-name-example">Exemple : <strong>{template.replaceAll("{nom}", "BONNARDEL").replaceAll("{prenom}", "Noah").replaceAll("{type_document}", "certificat")}.pdf</strong></div>
+        {progress && <div className="document-export-progress" aria-live="polite"><div><strong>{progress.total > 0 ? `Documents traités : ${progress.processed} / ${progress.total}` : progress.status === "ready" ? "Aucun nouveau document à exporter" : "Recherche des documents…"}</strong><span>{progress.status === "ready" ? "Archive prête" : "Reconnaissance et préparation en cours"}</span></div><progress max={Math.max(1, progress.total)} value={progress.processed} /><div className="recognition-counts"><span>{progress.certificateCount} certificat{progress.certificateCount > 1 ? "s" : ""}</span><span>{progress.attestationCount} attestation{progress.attestationCount > 1 ? "s" : ""}</span>{progress.questionnaireCount > 0 && <span className="warning-count">{progress.questionnaireCount} questionnaire{progress.questionnaireCount > 1 ? "s" : ""} à remplacer</span>}<span>{progress.unknownCount} à classer</span></div></div>}
+        <div className="editor-actions"><button className="primary" type="submit" disabled={busy || !fieldKey || !template.trim() || (scope === "groups" && groupIds.size === 0)}>{busy ? progress?.total ? `${progress.processed} / ${progress.total}…` : "Préparation…" : "Télécharger l’archive ZIP"}</button></div>
+      </form>}
+    </section>
   </div>;
 }
 
@@ -1596,8 +1748,15 @@ function viewTitle(view: View) {
   if (view === "members") return "Adhérents";
   if (view === "categories") return "Catégories";
   if (view === "groups") return "Groupes";
+  if (view === "documents") return "Documents";
   if (view === "messages") return "Messages";
   if (view === "attendance") return "Feuilles de présence";
   if (view === "setup") return "Configuration HelloAsso";
   return "Vue d'ensemble";
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} o`;
+  if (value < 1024 * 1024) return `${Math.round(value / 1024)} Ko`;
+  return `${(value / (1024 * 1024)).toLocaleString("fr-FR", { maximumFractionDigits: 1 })} Mo`;
 }

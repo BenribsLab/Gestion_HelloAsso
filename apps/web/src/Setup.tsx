@@ -7,6 +7,7 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
   const [data, setData] = useState<SetupData | null>(null);
   const [campaignSelection, setCampaignSelection] = useState<Set<string>>(new Set());
   const [fieldSelection, setFieldSelection] = useState<Set<string>>(new Set());
+  const [healthDocumentFieldKey, setHealthDocumentFieldKey] = useState<string>("");
   const [groupingSourceSelection, setGroupingSourceSelection] = useState<Set<string>>(new Set(["tier"]));
   const [groupingPreview, setGroupingPreview] = useState<GroupingPreview | null>(null);
   const [groupDrafts, setGroupDrafts] = useState<GroupDraft[]>([]);
@@ -24,7 +25,7 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
   );
   const groupingSources = useMemo(() => [
     { key: "tier", label: "Tarif choisi", type: "Tarif" },
-    ...(data?.fields.map((field) => ({ key: field.key, label: field.label, type: field.type })) ?? [])
+    ...(data?.fields.filter((field) => field.type !== "File").map((field) => ({ key: field.key, label: field.label, type: field.type })) ?? [])
   ], [data]);
   const groupsAreValid = groupDrafts.length > 0
     && groupDrafts.every((group) => group.name.trim().length >= 2 && group.rules.length > 0)
@@ -39,6 +40,7 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
         : nextData.campaigns.filter((campaign) => campaign.current).map((campaign) => campaign.formSlug)
     ));
     setFieldSelection(new Set(nextData.fields.filter((field) => field.selected).map((field) => field.key)));
+    setHealthDocumentFieldKey(nextData.fields.find((field) => field.documentRole === "health")?.key ?? "");
     setGroupDrafts(nextData.groupDefinitions.map((group) => ({
       localId: group.id, id: group.id, name: group.name, rules: group.rules
     })));
@@ -73,7 +75,7 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
   async function saveFields() {
     setBusy("fields"); setError(null); setMessage(null);
     try {
-      applyData(await api.selectFields([...fieldSelection]));
+      applyData(await api.selectFields([...fieldSelection], healthDocumentFieldKey || null));
       setMessage("Le modèle de données des adhérents est enregistré.");
     } catch (reason) { showError(reason); } finally { setBusy(null); }
   }
@@ -107,7 +109,19 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
   }
 
   function toggleCampaign(value: string) { setCampaignSelection((current) => toggled(current, value)); }
-  function toggleField(value: string) { setFieldSelection((current) => toggled(current, value)); }
+  function toggleField(value: string) {
+    setFieldSelection((current) => {
+      const next = toggled(current, value);
+      if (!next.has(value) && healthDocumentFieldKey === value) setHealthDocumentFieldKey("");
+      if (next.has(value) && !healthDocumentFieldKey) {
+        const field = data?.fields.find((candidate) => candidate.key === value);
+        if (field?.type === "File" && /certificat|attestation|questionnaire.*sant[eé]/i.test(field.label)) {
+          setHealthDocumentFieldKey(value);
+        }
+      }
+      return next;
+    });
+  }
   function toggleGroupingSource(value: string) {
     setGroupingSourceSelection((current) => toggled(current, value));
     setGroupingPreview(null);
@@ -172,12 +186,13 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
 
     <section className={`panel setup-section ${selectedCampaignCount === 0 ? "disabled-section" : ""}`}>
       <StepHeading number="3" title="Choisir les données à conserver" />
-      <p className="muted setup-hint">Les champs de base sont indispensables. Les autres données ne seront enregistrées que si vous les sélectionnez.</p>
+      <p className="muted setup-hint">Les champs de base sont indispensables. Les champs supplémentaires ne seront enregistrés que si vous les sélectionnez.</p>
       <div className="core-fields">{data?.coreFields.map((field) => <span key={field.key}>✓ {field.label}</span>)}</div>
       {data?.fields.length ? <>
-        <div className="field-toolbar"><strong>{data.fields.length} champs proposés</strong><div><button className="link-button" type="button" onClick={() => setFieldSelection(new Set(data.fields.map((field) => field.key)))}>Tout sélectionner</button><button className="link-button" type="button" onClick={() => setFieldSelection(new Set())}>Tout désélectionner</button></div></div>
+        <div className="field-toolbar"><strong>{data.fields.length} champs supplémentaires proposés</strong><div><button className="link-button" type="button" onClick={() => setFieldSelection(new Set(data.fields.map((field) => field.key)))}>Tout sélectionner</button><button className="link-button" type="button" onClick={() => { setFieldSelection(new Set()); setHealthDocumentFieldKey(""); }}>Tout désélectionner</button></div></div>
         <div className="field-list">{data.fields.map((field) => <label className="field-row" key={field.key}><input type="checkbox" checked={fieldSelection.has(field.key)} onChange={() => toggleField(field.key)} /><span><strong>{field.label}</strong><small>{fieldTypeLabel(field.type)} · présent dans {field.campaignCount}/{selectedCampaignCount} campagne{selectedCampaignCount > 1 ? "s" : ""}</small></span></label>)}</div>
-        <div className="setup-actions"><span>{fieldSelection.size} champ{fieldSelection.size > 1 ? "s" : ""} facultatif{fieldSelection.size > 1 ? "s" : ""}</span><button className="primary" disabled={busy !== null} onClick={() => void saveFields()} type="button">{busy === "fields" ? "Enregistrement…" : "Enregistrer ce modèle"}</button></div>
+        {data.fields.some((field) => field.type === "File" && fieldSelection.has(field.key)) && <label className="health-document-choice">Champ contenant le certificat médical ou l’attestation de santé<select value={healthDocumentFieldKey} onChange={(event) => setHealthDocumentFieldKey(event.target.value)}><option value="">Documents génériques uniquement (aucune reconnaissance)</option>{data.fields.filter((field) => field.type === "File" && fieldSelection.has(field.key)).map((field) => <option key={field.key} value={field.key}>{field.label}</option>)}</select><small>Le champ santé détecté par son intitulé est sélectionné automatiquement. Vous pouvez modifier ce choix.</small></label>}
+        <div className="setup-actions"><span>{fieldSelection.size} champ{fieldSelection.size > 1 ? "s" : ""} supplémentaire{fieldSelection.size > 1 ? "s" : ""}</span><button className="primary" disabled={busy !== null} onClick={() => void saveFields()} type="button">{busy === "fields" ? "Enregistrement…" : "Enregistrer ce modèle"}</button></div>
       </> : selectedCampaignCount > 0 ? <p className="empty-inline">Aucun champ n’a été trouvé. Une campagne doit contenir au moins une inscription pour permettre cette analyse.</p> : null}
     </section>
 

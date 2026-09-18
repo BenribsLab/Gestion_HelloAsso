@@ -50,6 +50,18 @@ export type Member = {
     type: string;
     value: unknown;
     overridden: boolean;
+    document?: {
+      available: boolean;
+      source: "local" | "helloasso" | null;
+      fileName: string | null;
+      mediaType: string | null;
+      sizeBytes: number | null;
+      classification: "certificate" | "attestation" | "questionnaire" | "unknown";
+      classificationSource: "automatic" | "manual";
+      health: boolean;
+      analyzedAt: string | null;
+      hasHelloAssoOriginal: boolean;
+    };
   }>;
   groups: Array<{ id: string; name: string }>;
 };
@@ -70,6 +82,7 @@ export type SetupData = {
     label: string;
     type: string;
     selected: boolean;
+    documentRole: "health" | null;
     campaignCount: number;
   }>;
   coreFields: Array<{ key: string; label: string }>;
@@ -199,7 +212,7 @@ let csrfToken: string | null = null;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
-  if (init?.body) {
+  if (init?.body && !(init.body instanceof FormData)) {
     headers.set("content-type", "application/json");
   }
   const method = (init?.method ?? "GET").toUpperCase();
@@ -222,6 +235,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return response.json() as Promise<T>;
+}
+
+async function requestBlob(path: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers);
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (init?.body && !(init.body instanceof FormData)) headers.set("content-type", "application/json");
+  if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) headers.set("x-csrf-token", csrfToken);
+  const response = await fetch(path, { ...init, headers, credentials: "same-origin" });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { message?: string } | null;
+    throw new Error(body?.message ?? (response.status === 502 || response.status === 504
+      ? "Le proxy a interrompu le traitement avant la fin."
+      : `La requête a échoué (erreur ${response.status}).`));
+  }
+  return {
+    blob: await response.blob(),
+    fileName: dispositionFileName(response.headers.get("content-disposition"))
+  };
 }
 
 export const api = {
@@ -339,10 +370,10 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ formSlugs })
     }),
-  selectFields: (fieldKeys: string[]) =>
+  selectFields: (fieldKeys: string[], healthDocumentFieldKey: string | null) =>
     request<SetupData>("/api/setup/fields", {
       method: "PUT",
-      body: JSON.stringify({ fieldKeys })
+      body: JSON.stringify({ fieldKeys, healthDocumentFieldKey })
     }),
   previewGrouping: (fieldKeys: string[]) =>
     request<GroupingPreview>("/api/setup/group-preview", {
@@ -357,5 +388,47 @@ export const api = {
       body: JSON.stringify({ groups })
     }),
   importMembers: () =>
-    request<{ importedCount: number }>("/api/helloasso/import-members", { method: "POST" })
+    request<{ importedCount: number }>("/api/helloasso/import-members", { method: "POST" }),
+  uploadMemberDocument: (memberId: string, fieldKey: string, file: File) => {
+    const body = new FormData(); body.append("file", file);
+    return request<{ uploaded: true; classification: "certificate" | "attestation" | "questionnaire" | "unknown" }>(
+      `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}`,
+      { method: "POST", body }
+    );
+  },
+  revertMemberDocument: (memberId: string, fieldKey: string) =>
+    request<{ revertedToHelloAsso: true }>(
+      `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}/local`, { method: "DELETE" }
+    ),
+  classifyMemberDocument: (memberId: string, fieldKey: string, classification: "certificate" | "attestation" | "questionnaire" | "unknown") =>
+    request<{ classification: string }>(
+      `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}/classification`,
+      { method: "PUT", body: JSON.stringify({ classification }) }
+    ),
+  memberDocumentUrl: (memberId: string, fieldKey: string, download = false) =>
+    `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}${download ? "?download=1" : ""}`,
+  documentConfig: () => request<{
+    fields: Array<{ key: string; label: string; health: boolean; availableCount: number; newCount: number }>;
+    identitySource: "member" | "payer";
+    template: string;
+    documentSelection: "new" | "all";
+  }>("/api/documents/config"),
+  startDocumentExport: (input: {
+    fieldKey: string; scope: "all" | "groups"; groupIds: string[];
+    identitySource: "member" | "payer"; template: string;
+    documentSelection: "new" | "all"; reanalyze: boolean;
+  }) => request<{ exportId: string }>("/api/documents/exports", { method: "POST", body: JSON.stringify(input) }),
+  documentExportStatus: (exportId: string) => request<{
+    exportId: string; status: "running" | "ready" | "failed"; total: number; processed: number;
+    certificateCount: number; attestationCount: number; questionnaireCount: number; unknownCount: number;
+    error: string | null;
+  }>(`/api/documents/exports/${exportId}`),
+  downloadDocumentExport: (exportId: string) => requestBlob(`/api/documents/exports/${exportId}/download`)
 };
+
+function dispositionFileName(value: string | null) {
+  if (!value) return null;
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(value)?.[1];
+  if (encoded) try { return decodeURIComponent(encoded); } catch { /* repli */ }
+  return /filename="?([^";]+)"?/i.exec(value)?.[1] ?? null;
+}
