@@ -1,0 +1,91 @@
+name: gestion-utilisateurs
+
+services:
+  database:
+    image: gestion-utilisateurs-database:latest
+    build:
+      context: .
+      dockerfile: apps/database/Dockerfile
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-gestion_utilisateurs}
+      POSTGRES_USER: ${POSTGRES_USER:-gestion_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-dev-change-me}
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - backend
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      DATABASE_URL: postgres://${POSTGRES_USER:-gestion_app}:${POSTGRES_PASSWORD:-local-dev-change-me}@database:5432/${POSTGRES_DB:-gestion_utilisateurs}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:18473}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-30}
+      SESSION_MAX_HOURS: ${SESSION_MAX_HOURS:-12}
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:-}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrateur CEY}
+      BOOTSTRAP_ADMIN_PASSWORD: ${BOOTSTRAP_ADMIN_PASSWORD:-}
+      HELLOASSO_BASE_URL: ${HELLOASSO_BASE_URL:-https://api.helloasso-sandbox.com}
+      HELLOASSO_CLIENT_ID: ${HELLOASSO_CLIENT_ID:-}
+      HELLOASSO_CLIENT_SECRET: ${HELLOASSO_CLIENT_SECRET:-}
+      HELLOASSO_ORGANIZATION_SLUG: ${HELLOASSO_ORGANIZATION_SLUG:-}
+      SMTP_HOST: ${SMTP_HOST:-smtp.mail.ovh.net}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Cercle d'Escrime de Yerres}
+      SMTP_REPLY_TO: ${SMTP_REPLY_TO:-}
+    depends_on:
+      database:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - frontend
+      - backend
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:${APP_HOST_PORT:-18473}:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:8080/"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - frontend
+
+volumes:
+  postgres_data:
+
+networks:
+  frontend:
+  backend:
+    internal: true

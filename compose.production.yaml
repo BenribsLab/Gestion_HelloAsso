@@ -1,0 +1,63 @@
+services:
+  database:
+    environment:
+      POSTGRES_PASSWORD: ""
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    secrets:
+      - postgres_password
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  api:
+    environment:
+      AUTH_ENABLED: "true"
+      APP_ORIGIN: https://cey.benribs.fr
+      TRUST_PROXY: "true"
+      SESSION_IDLE_MINUTES: "30"
+      SESSION_MAX_HOURS: "12"
+      DATABASE_URL: ""
+      DATABASE_HOST: database
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: ${POSTGRES_DB:-gestion_utilisateurs}
+      DATABASE_USER: ${POSTGRES_USER:-gestion_app}
+      DATABASE_PASSWORD_FILE: /run/secrets/postgres_password
+      HELLOASSO_CLIENT_SECRET: ""
+      HELLOASSO_CLIENT_SECRET_FILE: /run/secrets/helloasso_client_secret
+      SMTP_PASSWORD: ""
+      SMTP_PASSWORD_FILE: /run/secrets/smtp_password
+      BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Renseignez BOOTSTRAP_ADMIN_EMAIL dans .env.production}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrateur CEY}
+      BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
+    secrets:
+      - postgres_password
+      - helloasso_client_secret
+      - smtp_password
+      - bootstrap_admin_password
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  web:
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password.txt
+  helloasso_client_secret:
+    file: ./secrets/helloasso_client_secret.txt
+  smtp_password:
+    file: ./secrets/smtp_password.txt
+  bootstrap_admin_password:
+    file: ./secrets/bootstrap_admin_password.txt
