@@ -86,6 +86,8 @@ Une feuille peut être imprimée, enregistrée en PDF ou remplie dans l'applicat
 
 L'onglet **Documents IRL** produit des courriers papier personnalisés depuis un éditeur de texte mis en forme. Les variables comme `{prenom}`, `{nom}`, `{groupes}`, `{categorie}`, `{email}`, `{telephone}` ou `{adresse}` sont remplacées par les informations locales prioritaires de chaque adhérent. Les champs supplémentaires sélectionnés dans la configuration sont également proposés comme variables.
 
+Les contenus réutilisables peuvent être enregistrés dans la bibliothèque de modèles, puis chargés, modifiés ou supprimés. Un modèle conserve sa mise en forme, son nom de fichier et son mode d'export ; les données des adhérents et les destinataires sont toujours recalculés au moment de la génération.
+
 Les destinataires peuvent être tous les adhérents, les personnes sans certificat ou attestation de santé valide, un ou plusieurs groupes, une ou plusieurs catégories FFE, ou une sélection nominative. L'export produit soit un PDF unique dans lequel chaque adhérent commence sur une nouvelle page, soit une archive ZIP contenant un PDF individuel par adhérent.
 
 ### Messages par e-mail

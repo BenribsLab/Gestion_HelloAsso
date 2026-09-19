@@ -221,6 +221,16 @@ export type PrintDocumentVariable = {
   source: "member" | "additional";
 };
 
+export type PrintDocumentTemplate = {
+  id: string;
+  name: string;
+  documentTitle: string;
+  contentHtml: string;
+  output: "individual" | "combined";
+  createdAt: string;
+  updatedAt: string;
+};
+
 let csrfToken: string | null = null;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -371,6 +381,13 @@ export const api = {
       { method: "POST", body: JSON.stringify(input) }
     ),
   printDocumentConfig: () => request<{ variables: PrintDocumentVariable[] }>("/api/print-documents/config"),
+  printDocumentTemplates: () => request<{ items: PrintDocumentTemplate[] }>("/api/print-documents/templates"),
+  createPrintDocumentTemplate: (input: { name: string; documentTitle: string; contentHtml: string; output: "individual" | "combined" }) =>
+    request<PrintDocumentTemplate>("/api/print-documents/templates", { method: "POST", body: JSON.stringify(input) }),
+  updatePrintDocumentTemplate: (templateId: string, input: { name: string; documentTitle: string; contentHtml: string; output: "individual" | "combined" }) =>
+    request<PrintDocumentTemplate>(`/api/print-documents/templates/${templateId}`, { method: "PUT", body: JSON.stringify(input) }),
+  deletePrintDocumentTemplate: (templateId: string) =>
+    request<{ templateId: string; deleted: true }>(`/api/print-documents/templates/${templateId}`, { method: "DELETE" }),
   exportPrintDocuments: (input: {
     title: string;
     contentHtml: string;

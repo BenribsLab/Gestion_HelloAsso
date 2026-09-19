@@ -1,5 +1,5 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type AttendanceRecord, type AttendanceSheet, type AuthUser, type CategoryConfiguration, type DashboardData, type EmailMessageHistory, type EmailStatus, type EmailTarget, type Group, type GroupCriterion, type ManagedUser, type Member, type PrintDocumentTarget, type PrintDocumentVariable, type SchoolHoliday, type TrainingSchedule } from "./api";
+import { api, type AttendanceRecord, type AttendanceSheet, type AuthUser, type CategoryConfiguration, type DashboardData, type EmailMessageHistory, type EmailStatus, type EmailTarget, type Group, type GroupCriterion, type ManagedUser, type Member, type PrintDocumentTarget, type PrintDocumentTemplate, type PrintDocumentVariable, type SchoolHoliday, type TrainingSchedule } from "./api";
 import { Setup } from "./Setup";
 
 type View = "dashboard" | "members" | "categories" | "groups" | "documents" | "printDocuments" | "messages" | "attendance" | "setup";
@@ -1407,6 +1407,11 @@ const defaultPrintDocument = `<h1 data-align="center">Convocation</h1><p>Bonjour
 
 function PrintDocuments({ members, groups }: { members: Member[]; groups: Group[] }) {
   const [variables, setVariables] = useState<PrintDocumentVariable[]>([]);
+  const [templates, setTemplates] = useState<PrintDocumentTemplate[]>([]);
+  const [activeTemplateId, setActiveTemplateId] = useState("");
+  const [templateName, setTemplateName] = useState("");
+  const [templateBusy, setTemplateBusy] = useState(false);
+  const [templateMessage, setTemplateMessage] = useState<string | null>(null);
   const [targetType, setTargetType] = useState<PrintDocumentTarget["type"]>("all");
   const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
   const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
@@ -1437,7 +1442,10 @@ function PrintDocuments({ members, groups }: { members: Member[]; groups: Group[
   const visibleMembers = searchableMembers.slice((memberPage - 1) * 10, memberPage * 10);
 
   useEffect(() => {
-    api.printDocumentConfig().then((result) => setVariables(result.variables)).catch((reason: unknown) => {
+    Promise.all([api.printDocumentConfig(), api.printDocumentTemplates()]).then(([config, savedTemplates]) => {
+      setVariables(config.variables);
+      setTemplates(savedTemplates.items);
+    }).catch((reason: unknown) => {
       setError(reason instanceof Error ? reason.message : "Impossible de charger les variables disponibles.");
     });
   }, []);
@@ -1447,6 +1455,14 @@ function PrintDocuments({ members, groups }: { members: Member[]; groups: Group[
 
   function currentHtml() {
     return editorRef.current?.innerHTML ?? "";
+  }
+
+  function setEditorHtml(value: string) {
+    const sanitized = sanitizeEditorHtml(value);
+    if (editorRef.current) editorRef.current.innerHTML = sanitized;
+    window.localStorage.setItem("cey-print-document-draft", sanitized);
+    setHasContent(Boolean(textFromHtml(sanitized)));
+    selectionRef.current = null;
   }
 
   function editorChanged() {
@@ -1490,6 +1506,58 @@ function PrintDocuments({ members, groups }: { members: Member[]; groups: Group[
     return { type: targetType };
   }
 
+  function loadTemplate(templateId: string) {
+    setActiveTemplateId(templateId);
+    setTemplateMessage(null);
+    if (!templateId) return;
+    const template = templates.find((item) => item.id === templateId);
+    if (!template) return;
+    setTemplateName(template.name);
+    setTitle(template.documentTitle);
+    setOutput(template.output);
+    setEditorHtml(template.contentHtml);
+    setTemplateMessage(`Modèle « ${template.name} » chargé.`);
+  }
+
+  function newTemplate() {
+    setActiveTemplateId("");
+    setTemplateName("");
+    setTemplateMessage("Le document courant peut maintenant être enregistré comme nouveau modèle.");
+  }
+
+  async function saveTemplate() {
+    if (!templateName.trim() || !title.trim() || !hasContent) return;
+    setTemplateBusy(true); setTemplateMessage(null); setError(null);
+    const input = { name: templateName.trim(), documentTitle: title.trim(), contentHtml: sanitizeEditorHtml(currentHtml()), output };
+    try {
+      const saved = activeTemplateId
+        ? await api.updatePrintDocumentTemplate(activeTemplateId, input)
+        : await api.createPrintDocumentTemplate(input);
+      const result = await api.printDocumentTemplates();
+      setTemplates(result.items);
+      setActiveTemplateId(saved.id);
+      setTemplateName(saved.name);
+      setTemplateMessage(activeTemplateId ? "Modèle mis à jour." : "Nouveau modèle enregistré.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Impossible d'enregistrer le modèle.");
+    } finally { setTemplateBusy(false); }
+  }
+
+  async function deleteTemplate() {
+    const template = templates.find((item) => item.id === activeTemplateId);
+    if (!template || !window.confirm(`Supprimer le modèle « ${template.name} » ?\n\nLes PDF déjà produits ne seront pas affectés.`)) return;
+    setTemplateBusy(true); setTemplateMessage(null); setError(null);
+    try {
+      await api.deletePrintDocumentTemplate(template.id);
+      setTemplates((current) => current.filter((item) => item.id !== template.id));
+      setActiveTemplateId("");
+      setTemplateName("");
+      setTemplateMessage("Modèle supprimé. Le contenu reste dans l'éditeur.");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Impossible de supprimer le modèle.");
+    } finally { setTemplateBusy(false); }
+  }
+
   async function generate(event: FormEvent) {
     event.preventDefault();
     const selectedTarget = target();
@@ -1509,6 +1577,15 @@ function PrintDocuments({ members, groups }: { members: Member[]; groups: Group[
   const selectedTarget = target();
   return <form className="print-documents-page" onSubmit={(event) => void generate(event)}>
     {error && <div className="alert error">{error}</div>}
+    <section className="panel print-template-panel">
+      <div className="section-heading"><div><p className="eyebrow">Bibliothèque</p><h2>Modèles de documents</h2><p className="muted">Enregistrez le contenu, le nom du fichier et le format d’export pour les réutiliser plus tard.</p></div><span className="count-pill">{templates.length}</span></div>
+      <div className="print-template-controls">
+        <label>Modèle enregistré<select value={activeTemplateId} disabled={templateBusy} onChange={(event) => loadTemplate(event.target.value)}><option value="">Aucun modèle chargé</option>{templates.map((template) => <option key={template.id} value={template.id}>{template.name}</option>)}</select></label>
+        <label>Nom du modèle<input value={templateName} disabled={templateBusy} maxLength={100} placeholder="Ex. Convocation AG annuelle" onChange={(event) => setTemplateName(event.target.value)} /></label>
+      </div>
+      <div className="template-actions"><button className="secondary" type="button" disabled={templateBusy} onClick={newTemplate}>Nouveau modèle</button><button className="primary" type="button" disabled={templateBusy || !templateName.trim() || !title.trim() || !hasContent} onClick={() => void saveTemplate()}>{templateBusy ? "Enregistrement…" : activeTemplateId ? "Mettre à jour le modèle" : "Enregistrer comme modèle"}</button>{activeTemplateId && <button className="danger-link" type="button" disabled={templateBusy} onClick={() => void deleteTemplate()}>Supprimer le modèle</button>}</div>
+      {templateMessage && <p className="success-message">{templateMessage}</p>}
+    </section>
     <section className="panel print-recipient-panel">
       <div className="section-heading"><div><p className="eyebrow">Destinataires papier</p><h2>À qui créer un document ?</h2><p className="muted">Un document personnalisé sera produit pour chaque adhérent correspondant.</p></div><span className="count-pill">{matchingMembers.length}</span></div>
       <div className="print-target-grid">

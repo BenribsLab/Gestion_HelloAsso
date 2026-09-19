@@ -168,6 +168,25 @@ export function unknownPrintVariables(html: string, definitions: PrintVariableDe
     .filter((token) => !known.has(token.toLocaleLowerCase("fr")));
 }
 
+export function sanitizePrintDocumentHtml(html: string) {
+  const source = html
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .replace(/<(script|style|iframe|object)[^>]*>[\s\S]*?<\/\1>/gi, "");
+  const allowed = new Set(["p", "div", "br", "strong", "b", "em", "i", "u", "h1", "h2", "h3", "ul", "ol", "li"]);
+  let result = "";
+  for (const token of source.match(/<[^>]+>|[^<]+/g) ?? []) {
+    if (!token.startsWith("<")) { result += token; continue; }
+    const closing = /^<\s*\//.test(token);
+    const name = /^<\s*\/?\s*([a-z0-9]+)/i.exec(token)?.[1]?.toLowerCase();
+    if (!name || !allowed.has(name)) continue;
+    if (closing) { if (name !== "br") result += `</${name}>`; continue; }
+    if (name === "br") { result += "<br>"; continue; }
+    const alignment = /(?:text-align\s*:\s*|(?:data-)?align\s*=\s*["']?)(left|center|right)/i.exec(token)?.[1]?.toLowerCase();
+    result += `<${name}${alignment ? ` data-align="${alignment}"` : ""}>`;
+  }
+  return result.trim();
+}
+
 export async function createCombinedPrintDocument(html: string, members: PrintDocumentMember[], title: string) {
   const pdf = await PDFDocument.create();
   pdf.setTitle(title);

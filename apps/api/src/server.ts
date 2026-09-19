@@ -41,6 +41,7 @@ import {
   getPrintDocumentVariables,
   memberPrintFileName,
   resolvePrintDocumentMembers,
+  sanitizePrintDocumentHtml,
   unknownPrintVariables,
   type PrintDocumentTarget
 } from "./print-documents.js";
@@ -201,6 +202,13 @@ const printDocumentExportSchema = z.object({
   output: z.enum(["individual", "combined"]),
   target: printDocumentTargetSchema
 });
+const printDocumentTemplateSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  documentTitle: z.string().trim().min(1).max(120),
+  contentHtml: z.string().trim().min(1).max(60_000),
+  output: z.enum(["individual", "combined"])
+});
+const printDocumentTemplateIdSchema = z.object({ templateId: z.uuid() });
 
 server.get("/api/health", async () => {
   await database.query("SELECT 1");
@@ -266,12 +274,83 @@ server.get("/api/print-documents/config", async () => ({
   variables: await getPrintDocumentVariables(database)
 }));
 
+server.get("/api/print-documents/templates", async () => {
+  const result = await database.query<{
+    id: string; name: string; documentTitle: string; contentHtml: string;
+    output: "individual" | "combined"; createdAt: Date; updatedAt: Date;
+  }>(`
+    SELECT id, name, document_title AS "documentTitle", content_html AS "contentHtml",
+           output_mode AS output, created_at AS "createdAt", updated_at AS "updatedAt"
+    FROM print_document_templates
+    ORDER BY lower(name), updated_at DESC
+  `);
+  return { items: result.rows };
+});
+
+server.post("/api/print-documents/templates", async (request, reply) => {
+  const input = printDocumentTemplateSchema.parse(request.body);
+  const contentHtml = sanitizePrintDocumentHtml(input.contentHtml);
+  if (!printDocumentHasText(contentHtml)) return reply.code(400).send({ message: "Le modèle ne peut pas être vide." });
+  try {
+    const result = await database.query<{
+      id: string; name: string; documentTitle: string; contentHtml: string;
+      output: "individual" | "combined"; createdAt: Date; updatedAt: Date;
+    }>(`
+      INSERT INTO print_document_templates (name, document_title, content_html, output_mode, created_by)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, name, document_title AS "documentTitle", content_html AS "contentHtml",
+                output_mode AS output, created_at AS "createdAt", updated_at AS "updatedAt"
+    `, [input.name, input.documentTitle, contentHtml, input.output, request.authUser?.id ?? null]);
+    return reply.code(201).send(result.rows[0]);
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "23505") {
+      return reply.code(409).send({ message: "Un modèle porte déjà ce nom." });
+    }
+    throw error;
+  }
+});
+
+server.put("/api/print-documents/templates/:templateId", async (request, reply) => {
+  const { templateId } = printDocumentTemplateIdSchema.parse(request.params);
+  const input = printDocumentTemplateSchema.parse(request.body);
+  const contentHtml = sanitizePrintDocumentHtml(input.contentHtml);
+  if (!printDocumentHasText(contentHtml)) return reply.code(400).send({ message: "Le modèle ne peut pas être vide." });
+  try {
+    const result = await database.query<{
+      id: string; name: string; documentTitle: string; contentHtml: string;
+      output: "individual" | "combined"; createdAt: Date; updatedAt: Date;
+    }>(`
+      UPDATE print_document_templates
+      SET name = $2, document_title = $3, content_html = $4, output_mode = $5, updated_at = now()
+      WHERE id = $1
+      RETURNING id, name, document_title AS "documentTitle", content_html AS "contentHtml",
+                output_mode AS output, created_at AS "createdAt", updated_at AS "updatedAt"
+    `, [templateId, input.name, input.documentTitle, contentHtml, input.output]);
+    if (!result.rows[0]) return reply.code(404).send({ message: "Ce modèle n'existe plus." });
+    return result.rows[0];
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "23505") {
+      return reply.code(409).send({ message: "Un modèle porte déjà ce nom." });
+    }
+    throw error;
+  }
+});
+
+server.delete("/api/print-documents/templates/:templateId", async (request, reply) => {
+  const { templateId } = printDocumentTemplateIdSchema.parse(request.params);
+  const result = await database.query("DELETE FROM print_document_templates WHERE id = $1", [templateId]);
+  if (!result.rowCount) return reply.code(404).send({ message: "Ce modèle n'existe plus." });
+  return { templateId, deleted: true };
+});
+
 server.post("/api/print-documents/export", {
   config: { rateLimit: { max: 10, timeWindow: "1 hour" } }
 }, async (request, reply) => {
   const input = printDocumentExportSchema.parse(request.body);
+  const contentHtml = sanitizePrintDocumentHtml(input.contentHtml);
+  if (!printDocumentHasText(contentHtml)) return reply.code(400).send({ message: "Le document ne peut pas être vide." });
   const variables = await getPrintDocumentVariables(database);
-  const unknown = unknownPrintVariables(input.contentHtml, variables);
+  const unknown = unknownPrintVariables(contentHtml, variables);
   if (unknown.length > 0) {
     return reply.code(400).send({ message: `Variable inconnue : ${unknown.slice(0, 3).join(", ")}.` });
   }
@@ -279,7 +358,7 @@ server.post("/api/print-documents/export", {
   if (members.length === 0) return reply.code(400).send({ message: "Aucun adhérent ne correspond à cette sélection." });
   const archiveName = safeDownloadName(input.title);
   if (input.output === "combined") {
-    const pdf = await createCombinedPrintDocument(input.contentHtml, members, input.title);
+    const pdf = await createCombinedPrintDocument(contentHtml, members, input.title);
     reply.header("Content-Type", "application/pdf");
     reply.header("Content-Length", pdf.length);
     reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${archiveName}.pdf`)}`);
@@ -292,7 +371,7 @@ server.post("/api/print-documents/export", {
     const count = (names.get(original) ?? 0) + 1;
     names.set(original, count);
     const name = `${original}${count > 1 ? `-${count}` : ""}.pdf`;
-    files.push({ name, content: await createIndividualPrintDocument(input.contentHtml, member, input.title) });
+    files.push({ name, content: await createIndividualPrintDocument(contentHtml, member, input.title) });
   }
   const archive = await zipBuffer(files);
   reply.header("Content-Type", "application/zip");
@@ -1386,6 +1465,10 @@ function safeDownloadName(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9_-]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
     .slice(0, 100) || "documents-irl";
+}
+
+function printDocumentHasText(html: string) {
+  return html.replace(/<[^>]+>/g, "").replace(/&nbsp;|&#160;/gi, " ").trim().length > 0;
 }
 
 async function zipBuffer(files: Array<{ name: string; content: Buffer }>) {
