@@ -208,6 +208,19 @@ export type EmailMessageHistory = {
   finishedAt: string | null;
 };
 
+export type PrintDocumentTarget =
+  | { type: "all" }
+  | { type: "healthMissing" }
+  | { type: "groups"; groupIds: string[] }
+  | { type: "categories"; categories: string[] }
+  | { type: "members"; memberIds: string[] };
+
+export type PrintDocumentVariable = {
+  token: string;
+  label: string;
+  source: "member" | "additional";
+};
+
 let csrfToken: string | null = null;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -357,6 +370,13 @@ export const api = {
       "/api/email/messages",
       { method: "POST", body: JSON.stringify(input) }
     ),
+  printDocumentConfig: () => request<{ variables: PrintDocumentVariable[] }>("/api/print-documents/config"),
+  exportPrintDocuments: (input: {
+    title: string;
+    contentHtml: string;
+    output: "individual" | "combined";
+    target: PrintDocumentTarget;
+  }) => requestBlob("/api/print-documents/export", { method: "POST", body: JSON.stringify(input) }),
   checkHelloAsso: () =>
     request<{ connected: true; organization: { name: string; slug: string } }>(
       "/api/helloasso/check",

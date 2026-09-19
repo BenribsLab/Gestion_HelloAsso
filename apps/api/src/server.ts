@@ -35,6 +35,15 @@ import {
   selectCampaigns,
   selectFields
 } from "./setup.js";
+import {
+  createCombinedPrintDocument,
+  createIndividualPrintDocument,
+  getPrintDocumentVariables,
+  memberPrintFileName,
+  resolvePrintDocumentMembers,
+  unknownPrintVariables,
+  type PrintDocumentTarget
+} from "./print-documents.js";
 
 const config = loadConfig();
 const database = createDatabase(config);
@@ -179,6 +188,19 @@ const emailMessageSchema = z.object({
   body: z.string().trim().min(1).max(50_000),
   target: emailTargetSchema
 });
+const printDocumentTargetSchema = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("all") }),
+  z.object({ type: z.literal("healthMissing") }),
+  z.object({ type: z.literal("groups"), groupIds: z.array(z.uuid()).min(1).max(100) }),
+  z.object({ type: z.literal("categories"), categories: z.array(z.string().trim().min(1).max(50)).min(1).max(100) }),
+  z.object({ type: z.literal("members"), memberIds: z.array(z.uuid()).min(1).max(1500) })
+]);
+const printDocumentExportSchema = z.object({
+  title: z.string().trim().min(1).max(120),
+  contentHtml: z.string().trim().min(1).max(60_000),
+  output: z.enum(["individual", "combined"]),
+  target: printDocumentTargetSchema
+});
 
 server.get("/api/health", async () => {
   await database.query("SELECT 1");
@@ -238,6 +260,45 @@ server.post("/api/email/messages", { config: { rateLimit: { max: 10, timeWindow:
     const detail = error instanceof Error ? error.message : "L'envoi du message a échoué.";
     return reply.code(400).send({ message: detail });
   }
+});
+
+server.get("/api/print-documents/config", async () => ({
+  variables: await getPrintDocumentVariables(database)
+}));
+
+server.post("/api/print-documents/export", {
+  config: { rateLimit: { max: 10, timeWindow: "1 hour" } }
+}, async (request, reply) => {
+  const input = printDocumentExportSchema.parse(request.body);
+  const variables = await getPrintDocumentVariables(database);
+  const unknown = unknownPrintVariables(input.contentHtml, variables);
+  if (unknown.length > 0) {
+    return reply.code(400).send({ message: `Variable inconnue : ${unknown.slice(0, 3).join(", ")}.` });
+  }
+  const members = await resolvePrintDocumentMembers(database, input.target as PrintDocumentTarget);
+  if (members.length === 0) return reply.code(400).send({ message: "Aucun adhérent ne correspond à cette sélection." });
+  const archiveName = safeDownloadName(input.title);
+  if (input.output === "combined") {
+    const pdf = await createCombinedPrintDocument(input.contentHtml, members, input.title);
+    reply.header("Content-Type", "application/pdf");
+    reply.header("Content-Length", pdf.length);
+    reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${archiveName}.pdf`)}`);
+    return reply.send(pdf);
+  }
+  const names = new Map<string, number>();
+  const files: Array<{ name: string; content: Buffer }> = [];
+  for (const member of members) {
+    const original = memberPrintFileName(member).replace(/\.pdf$/i, "");
+    const count = (names.get(original) ?? 0) + 1;
+    names.set(original, count);
+    const name = `${original}${count > 1 ? `-${count}` : ""}.pdf`;
+    files.push({ name, content: await createIndividualPrintDocument(input.contentHtml, member, input.title) });
+  }
+  const archive = await zipBuffer(files);
+  reply.header("Content-Type", "application/zip");
+  reply.header("Content-Length", archive.length);
+  reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${archiveName}.zip`)}`);
+  return reply.send(archive);
 });
 
 server.get("/api/members", async () => {
@@ -1319,6 +1380,12 @@ function classificationLabel(value: DocumentClassification) {
 
 function csvRow(values: string[]) {
   return values.map((value) => `"${value.replaceAll('"', '""')}"`).join(";");
+}
+
+function safeDownloadName(value: string) {
+  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9_-]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
+    .slice(0, 100) || "documents-irl";
 }
 
 async function zipBuffer(files: Array<{ name: string; content: Buffer }>) {

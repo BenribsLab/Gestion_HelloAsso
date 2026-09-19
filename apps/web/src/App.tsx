@@ -1,8 +1,8 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type AttendanceRecord, type AttendanceSheet, type AuthUser, type CategoryConfiguration, type DashboardData, type EmailMessageHistory, type EmailStatus, type EmailTarget, type Group, type GroupCriterion, type ManagedUser, type Member, type SchoolHoliday, type TrainingSchedule } from "./api";
+import { api, type AttendanceRecord, type AttendanceSheet, type AuthUser, type CategoryConfiguration, type DashboardData, type EmailMessageHistory, type EmailStatus, type EmailTarget, type Group, type GroupCriterion, type ManagedUser, type Member, type PrintDocumentTarget, type PrintDocumentVariable, type SchoolHoliday, type TrainingSchedule } from "./api";
 import { Setup } from "./Setup";
 
-type View = "dashboard" | "members" | "categories" | "groups" | "documents" | "messages" | "attendance" | "setup";
+type View = "dashboard" | "members" | "categories" | "groups" | "documents" | "printDocuments" | "messages" | "attendance" | "setup";
 type MemberDraft = {
   firstName: string;
   lastName: string;
@@ -266,6 +266,9 @@ export function App() {
           <NavButton active={view === "documents"} onClick={() => navigate("documents")}>
             Documents
           </NavButton>
+          <NavButton active={view === "printDocuments"} onClick={() => navigate("printDocuments")}>
+            Documents IRL
+          </NavButton>
           <NavButton active={view === "messages"} onClick={() => navigate("messages")}>
             Messages
           </NavButton>
@@ -333,6 +336,7 @@ export function App() {
               />
             )}
             {view === "documents" && <Documents groups={groups} />}
+            {view === "printDocuments" && <PrintDocuments members={members} groups={groups} />}
             {view === "messages" && <Messages groups={groups} initialRecipient={messageRecipient} />}
             {view === "attendance" && <Attendance groups={groups} />}
             {view === "setup" && dashboard && (
@@ -543,19 +547,20 @@ function ChoiceFilter({ label, options, selection, onToggle, onClear }: {
   </details>;
 }
 
-function Pagination({ page, pageSize, total, onPageChange, onPageSizeChange }: {
+function Pagination({ page, pageSize, total, onPageChange, onPageSizeChange, fixedPageSize = false }: {
   page: number;
   pageSize: number;
   total: number;
   onPageChange: (page: number) => void;
   onPageSizeChange: (pageSize: number) => void;
+  fixedPageSize?: boolean;
 }) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
   const start = total === 0 ? 0 : (page - 1) * pageSize + 1;
   const end = Math.min(page * pageSize, total);
   return <div className="pagination">
     <span>{start}–{end} sur {total}</span>
-    <label>Afficher<select value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))}>{[10, 25, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}</select></label>
+    {!fixedPageSize && <label>Afficher<select value={pageSize} onChange={(event) => onPageSizeChange(Number(event.target.value))}>{[10, 25, 50, 100].map((size) => <option key={size} value={size}>{size}</option>)}</select></label>}
     <div className="pagination-nav"><button className="secondary compact-button" type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>‹ Précédente</button><strong>Page {page} / {pageCount}</strong><button className="secondary compact-button" type="button" disabled={page >= pageCount} onClick={() => onPageChange(page + 1)}>Suivante ›</button></div>
   </div>;
 }
@@ -1398,6 +1403,201 @@ function TrainingSchedules({ group, saving, onSave }: { group: Group; saving: bo
   </div>;
 }
 
+const defaultPrintDocument = `<h1 data-align="center">Convocation</h1><p>Bonjour <strong>{prenom} {nom}</strong>,</p><p>Nous vous invitons à participer à notre prochain événement.</p><p>Groupe : {groupes}<br>Catégorie : {categorie}</p><p>Fait le {date_du_jour}.</p>`;
+
+function PrintDocuments({ members, groups }: { members: Member[]; groups: Group[] }) {
+  const [variables, setVariables] = useState<PrintDocumentVariable[]>([]);
+  const [targetType, setTargetType] = useState<PrintDocumentTarget["type"]>("all");
+  const [selectedGroups, setSelectedGroups] = useState<Set<string>>(new Set());
+  const [selectedCategories, setSelectedCategories] = useState<Set<string>>(new Set());
+  const [selectedMembers, setSelectedMembers] = useState<Set<string>>(new Set());
+  const [memberSearch, setMemberSearch] = useState("");
+  const [memberPage, setMemberPage] = useState(1);
+  const [title, setTitle] = useState("courrier-adherents");
+  const [output, setOutput] = useState<"individual" | "combined">("combined");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
+  const selectionRef = useRef<Range | null>(null);
+  const initialHtml = useRef(sanitizeEditorHtml(window.localStorage.getItem("cey-print-document-draft") ?? defaultPrintDocument));
+  const [hasContent, setHasContent] = useState(Boolean(textFromHtml(initialHtml.current)));
+  const categories = useMemo(() => uniqueSorted(members.map(memberCategoryLabel).filter((category) => category !== "À corriger")), [members]);
+  const matchingMembers = useMemo(() => members.filter((member) => {
+    if (targetType === "healthMissing") return memberHealthDocumentState(member).tone !== "valid";
+    if (targetType === "groups") return member.groups.some((group) => selectedGroups.has(group.id));
+    if (targetType === "categories") return selectedCategories.has(memberCategoryLabel(member));
+    if (targetType === "members") return selectedMembers.has(member.id);
+    return true;
+  }), [members, selectedCategories, selectedGroups, selectedMembers, targetType]);
+  const searchableMembers = useMemo(() => members.filter((member) => includesText(
+    `${member.lastName} ${member.firstName} ${member.email ?? ""} ${memberCategoryLabel(member)}`,
+    memberSearch
+  )), [memberSearch, members]);
+  const memberPageCount = Math.max(1, Math.ceil(searchableMembers.length / 10));
+  const visibleMembers = searchableMembers.slice((memberPage - 1) * 10, memberPage * 10);
+
+  useEffect(() => {
+    api.printDocumentConfig().then((result) => setVariables(result.variables)).catch((reason: unknown) => {
+      setError(reason instanceof Error ? reason.message : "Impossible de charger les variables disponibles.");
+    });
+  }, []);
+  useEffect(() => { if (editorRef.current) editorRef.current.innerHTML = initialHtml.current; }, []);
+  useEffect(() => setMemberPage(1), [memberSearch]);
+  useEffect(() => { if (memberPage > memberPageCount) setMemberPage(memberPageCount); }, [memberPage, memberPageCount]);
+
+  function currentHtml() {
+    return editorRef.current?.innerHTML ?? "";
+  }
+
+  function editorChanged() {
+    normalizeEditorAlignment(editorRef.current);
+    const html = currentHtml();
+    window.localStorage.setItem("cey-print-document-draft", sanitizeEditorHtml(html));
+    setHasContent(Boolean(textFromHtml(html)));
+    rememberSelection();
+  }
+
+  function rememberSelection() {
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    if (range && editorRef.current?.contains(range.commonAncestorContainer)) selectionRef.current = range.cloneRange();
+  }
+
+  function restoreSelection() {
+    editorRef.current?.focus();
+    const selection = window.getSelection();
+    if (!selection || !selectionRef.current) return;
+    selection.removeAllRanges();
+    selection.addRange(selectionRef.current);
+  }
+
+  function format(command: string, value?: string) {
+    restoreSelection();
+    window.document.execCommand(command, false, value);
+    editorChanged();
+  }
+
+  function insertVariable(token: string) {
+    restoreSelection();
+    window.document.execCommand("insertText", false, token);
+    editorChanged();
+  }
+
+  function target(): PrintDocumentTarget | null {
+    if (targetType === "groups") return selectedGroups.size ? { type: "groups", groupIds: [...selectedGroups] } : null;
+    if (targetType === "categories") return selectedCategories.size ? { type: "categories", categories: [...selectedCategories] } : null;
+    if (targetType === "members") return selectedMembers.size ? { type: "members", memberIds: [...selectedMembers] } : null;
+    return { type: targetType };
+  }
+
+  async function generate(event: FormEvent) {
+    event.preventDefault();
+    const selectedTarget = target();
+    if (!selectedTarget || !editorRef.current) return;
+    setBusy(true); setError(null);
+    try {
+      const result = await api.exportPrintDocuments({ title, contentHtml: sanitizeEditorHtml(currentHtml()), output, target: selectedTarget });
+      const url = URL.createObjectURL(result.blob);
+      const link = window.document.createElement("a");
+      link.href = url; link.download = result.fileName ?? `${title}.${output === "combined" ? "pdf" : "zip"}`; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Impossible de produire les documents.");
+    } finally { setBusy(false); }
+  }
+
+  const selectedTarget = target();
+  return <form className="print-documents-page" onSubmit={(event) => void generate(event)}>
+    {error && <div className="alert error">{error}</div>}
+    <section className="panel print-recipient-panel">
+      <div className="section-heading"><div><p className="eyebrow">Destinataires papier</p><h2>À qui créer un document ?</h2><p className="muted">Un document personnalisé sera produit pour chaque adhérent correspondant.</p></div><span className="count-pill">{matchingMembers.length}</span></div>
+      <div className="print-target-grid">
+        <label className={targetType === "all" ? "selected" : ""}><input type="radio" checked={targetType === "all"} onChange={() => setTargetType("all")} /><strong>Tous les adhérents</strong><small>{members.length} personnes actives</small></label>
+        <label className={targetType === "healthMissing" ? "selected" : ""}><input type="radio" checked={targetType === "healthMissing"} onChange={() => setTargetType("healthMissing")} /><strong>Document santé manquant</strong><small>Sans certificat ou attestation valide</small></label>
+        <label className={targetType === "groups" ? "selected" : ""}><input type="radio" checked={targetType === "groups"} onChange={() => setTargetType("groups")} /><strong>Par groupe</strong><small>Un ou plusieurs groupes</small></label>
+        <label className={targetType === "categories" ? "selected" : ""}><input type="radio" checked={targetType === "categories"} onChange={() => setTargetType("categories")} /><strong>Par catégorie</strong><small>M9, M11, Senior…</small></label>
+        <label className={targetType === "members" ? "selected" : ""}><input type="radio" checked={targetType === "members"} onChange={() => setTargetType("members")} /><strong>Choix individuel</strong><small>Sélection nominative</small></label>
+      </div>
+      {targetType === "groups" && <div className="print-choice-list"><strong>Groupes à inclure</strong><div className="group-checkboxes">{groups.map((group) => <label key={group.id}><input type="checkbox" checked={selectedGroups.has(group.id)} onChange={() => setSelectedGroups((current) => toggledSet(current, group.id))} /><span>{group.name}<small>{group.membersCount} adhérent{group.membersCount > 1 ? "s" : ""}</small></span></label>)}</div></div>}
+      {targetType === "categories" && <div className="print-choice-list"><strong>Catégories à inclure</strong><div className="group-checkboxes">{categories.map((category) => <label key={category}><input type="checkbox" checked={selectedCategories.has(category)} onChange={() => setSelectedCategories((current) => toggledSet(current, category))} /><span>{category}<small>{members.filter((member) => memberCategoryLabel(member) === category).length} adhérent(s)</small></span></label>)}</div></div>}
+      {targetType === "members" && <div className="print-member-picker">
+        <div className="print-member-picker-heading"><strong>Adhérents choisis</strong><span>{selectedMembers.size} sélectionné{selectedMembers.size > 1 ? "s" : ""}</span></div>
+        <ListSearch value={memberSearch} onChange={setMemberSearch} placeholder="Rechercher un nom ou un prénom…" />
+        <div className="print-member-actions"><button type="button" className="link-button" onClick={() => setSelectedMembers((current) => new Set([...current, ...searchableMembers.map((member) => member.id)]))}>Sélectionner les résultats</button><button type="button" className="link-button" onClick={() => setSelectedMembers(new Set())}>Tout désélectionner</button></div>
+        <div className="print-member-list">{visibleMembers.map((member) => <label key={member.id}><input type="checkbox" checked={selectedMembers.has(member.id)} onChange={() => setSelectedMembers((current) => toggledSet(current, member.id))} /><span><strong>{member.lastName} {member.firstName}</strong><small>{memberCategoryLabel(member)} · {member.groups.map((group) => group.name).join(", ") || "Aucun groupe"}</small></span></label>)}</div>
+        <Pagination page={memberPage} pageSize={10} total={searchableMembers.length} onPageChange={setMemberPage} onPageSizeChange={() => undefined} fixedPageSize />
+      </div>}
+    </section>
+
+    <section className="panel print-editor-panel">
+      <div className="section-heading"><div><p className="eyebrow">Contenu imprimé</p><h2>Rédiger le document</h2><p className="muted">Cliquez sur une variable pour l’insérer à la position du curseur.</p></div></div>
+      <div className="variable-library">
+        <div><strong>Informations principales</strong><div>{variables.filter((variable) => variable.source === "member").map((variable) => <button key={variable.token} type="button" title={variable.token} onMouseDown={(event) => { event.preventDefault(); insertVariable(variable.token); }}>{variable.label}</button>)}</div></div>
+        {variables.some((variable) => variable.source === "additional") && <details><summary>Champs supplémentaires</summary><div>{variables.filter((variable) => variable.source === "additional").map((variable) => <button key={variable.token} type="button" title={variable.token} onMouseDown={(event) => { event.preventDefault(); insertVariable(variable.token); }}>{variable.label}</button>)}</div></details>}
+      </div>
+      <div className="rich-editor-shell">
+        <div className="rich-editor-toolbar" role="toolbar" aria-label="Mise en forme">
+          <select aria-label="Style du paragraphe" defaultValue="p" onMouseDown={rememberSelection} onChange={(event) => format("formatBlock", event.target.value)}><option value="p">Paragraphe</option><option value="h1">Grand titre</option><option value="h2">Sous-titre</option><option value="h3">Petit titre</option></select>
+          <span className="toolbar-separator" />
+          <button type="button" aria-label="Gras" title="Gras" onMouseDown={(event) => { event.preventDefault(); format("bold"); }}><strong>G</strong></button>
+          <button type="button" aria-label="Italique" title="Italique" onMouseDown={(event) => { event.preventDefault(); format("italic"); }}><em>I</em></button>
+          <button type="button" aria-label="Souligné" title="Souligné" onMouseDown={(event) => { event.preventDefault(); format("underline"); }}><u>S</u></button>
+          <span className="toolbar-separator" />
+          <button type="button" title="Aligner à gauche" onMouseDown={(event) => { event.preventDefault(); format("justifyLeft"); }}>≡</button>
+          <button type="button" title="Centrer" onMouseDown={(event) => { event.preventDefault(); format("justifyCenter"); }}>≣</button>
+          <button type="button" title="Aligner à droite" onMouseDown={(event) => { event.preventDefault(); format("justifyRight"); }}>≡</button>
+          <span className="toolbar-separator" />
+          <button type="button" title="Liste à puces" onMouseDown={(event) => { event.preventDefault(); format("insertUnorderedList"); }}>• Liste</button>
+          <button type="button" title="Liste numérotée" onMouseDown={(event) => { event.preventDefault(); format("insertOrderedList"); }}>1. Liste</button>
+        </div>
+        <div ref={editorRef} className="rich-editor-page" contentEditable suppressContentEditableWarning role="textbox" aria-multiline="true" data-placeholder="Rédigez votre courrier…" onInput={editorChanged} onKeyUp={rememberSelection} onMouseUp={rememberSelection} onBlur={rememberSelection} onPaste={(event) => { event.preventDefault(); window.document.execCommand("insertText", false, event.clipboardData.getData("text/plain")); editorChanged(); }} />
+      </div>
+    </section>
+
+    <section className="panel print-output-panel">
+      <div className="section-heading"><div><p className="eyebrow">Export</p><h2>Préparer l’impression</h2></div></div>
+      <div className="document-naming"><label>Nom du fichier<input required maxLength={120} value={title} onChange={(event) => setTitle(event.target.value)} /></label><fieldset><legend>Format produit</legend><label className="radio-line"><input type="radio" checked={output === "combined"} onChange={() => setOutput("combined")} /> Un seul PDF regroupant toutes les pages</label><label className="radio-line"><input type="radio" checked={output === "individual"} onChange={() => setOutput("individual")} /> Un PDF par adhérent, regroupés dans un ZIP</label></fieldset></div>
+      <div className="print-export-summary"><strong>{matchingMembers.length} document{matchingMembers.length > 1 ? "s" : ""} à produire</strong><span>{output === "combined" ? "Un fichier PDF prêt à imprimer" : "Une archive ZIP de fichiers individuels"}</span></div>
+      <div className="editor-actions"><button className="primary" type="submit" disabled={busy || !title.trim() || !hasContent || !selectedTarget || matchingMembers.length === 0}>{busy ? "Création des PDF…" : output === "combined" ? "Télécharger le PDF" : "Télécharger le ZIP"}</button></div>
+    </section>
+  </form>;
+}
+
+function sanitizeEditorHtml(value: string) {
+  const parsed = new DOMParser().parseFromString(value, "text/html");
+  const allowed = new Set(["P", "DIV", "BR", "STRONG", "B", "EM", "I", "U", "H1", "H2", "H3", "UL", "OL", "LI"]);
+  const clean = window.document.createElement("div");
+  const copy = (source: Node, destination: Node) => {
+    for (const child of source.childNodes) {
+      if (child.nodeType === Node.TEXT_NODE) { destination.appendChild(window.document.createTextNode(child.textContent ?? "")); continue; }
+      if (!(child instanceof HTMLElement) || new Set(["SCRIPT", "STYLE", "IFRAME", "OBJECT"]).has(child.tagName)) continue;
+      if (!allowed.has(child.tagName)) { copy(child, destination); continue; }
+      const element = window.document.createElement(child.tagName.toLowerCase());
+      const alignment = child.dataset.align || child.style.textAlign || child.getAttribute("align") || "";
+      if (["left", "center", "right"].includes(alignment)) element.dataset.align = alignment;
+      destination.appendChild(element);
+      copy(child, element);
+    }
+  };
+  copy(parsed.body, clean);
+  return clean.innerHTML;
+}
+
+function normalizeEditorAlignment(editor: HTMLElement | null) {
+  if (!editor) return;
+  for (const element of editor.querySelectorAll<HTMLElement>("[style*='text-align'], [align], [data-align]")) {
+    const alignment = element.dataset.align || element.style.textAlign || element.getAttribute("align") || "";
+    if (["left", "center", "right"].includes(alignment)) element.dataset.align = alignment;
+    element.style.removeProperty("text-align");
+    element.removeAttribute("style");
+    element.removeAttribute("align");
+  }
+}
+
+function textFromHtml(value: string) {
+  return new DOMParser().parseFromString(value, "text/html").body.textContent?.trim() ?? "";
+}
+
 function Documents({ groups }: { groups: Group[] }) {
   const [config, setConfig] = useState<Awaited<ReturnType<typeof api.documentConfig>> | null>(null);
   const [fieldKey, setFieldKey] = useState("");
@@ -1749,6 +1949,7 @@ function viewTitle(view: View) {
   if (view === "categories") return "Catégories";
   if (view === "groups") return "Groupes";
   if (view === "documents") return "Documents";
+  if (view === "printDocuments") return "Documents IRL";
   if (view === "messages") return "Messages";
   if (view === "attendance") return "Feuilles de présence";
   if (view === "setup") return "Configuration HelloAsso";

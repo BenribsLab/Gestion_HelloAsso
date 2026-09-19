@@ -82,6 +82,12 @@ Chaque groupe peut recevoir un ou plusieurs créneaux hebdomadaires. L'onglet **
 
 Une feuille peut être imprimée, enregistrée en PDF ou remplie dans l'application. Chaque case passe successivement par les états présent, absent, excusé et non renseigné. Les saisies sont enregistrées dans PostgreSQL local.
 
+### Documents IRL
+
+L'onglet **Documents IRL** produit des courriers papier personnalisés depuis un éditeur de texte mis en forme. Les variables comme `{prenom}`, `{nom}`, `{groupes}`, `{categorie}`, `{email}`, `{telephone}` ou `{adresse}` sont remplacées par les informations locales prioritaires de chaque adhérent. Les champs supplémentaires sélectionnés dans la configuration sont également proposés comme variables.
+
+Les destinataires peuvent être tous les adhérents, les personnes sans certificat ou attestation de santé valide, un ou plusieurs groupes, une ou plusieurs catégories FFE, ou une sélection nominative. L'export produit soit un PDF unique dans lequel chaque adhérent commence sur une nouvelle page, soit une archive ZIP contenant un PDF individuel par adhérent.
+
 ### Messages par e-mail
 
 L'onglet **Messages** envoie les e-mails par le compte SMTP configuré dans `.env`. Pour un compte OVH MX Plan européen, la configuration prévue utilise `smtp.mail.ovh.net`, le port `587` et STARTTLS. Le nom d'utilisateur est l'adresse e-mail complète.
