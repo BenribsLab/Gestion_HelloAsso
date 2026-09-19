@@ -43,7 +43,7 @@ const documentExportJobs = new Map<string, DocumentExportJob>();
 const server = Fastify({
   logger: true,
   trustProxy: config.trustProxy,
-  bodyLimit: 1_048_576,
+  bodyLimit: 15 * 1024 * 1024,
   requestTimeout: 30_000,
   connectionTimeout: 10_000
 });
