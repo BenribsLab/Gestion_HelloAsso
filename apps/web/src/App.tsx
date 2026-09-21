@@ -1,7 +1,7 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type AuthUser, type DashboardData, type Extension, type ExtensionConfiguration, type ExtensionInstallation, type Group, type GroupCriterion, type ManagedUser, type Member } from "./api";
 import { Setup } from "./Setup";
-import { uiContracts, type RegisteredDocumentPanel, type RegisteredGroupPanel, type RegisteredMemberAction, type RegisteredMemberColumn } from "./extension-contracts";
+import { uiContracts, type RegisteredDocumentPanel, type RegisteredGroupPanel, type RegisteredMemberAction, type RegisteredMemberColumn, type RegisteredMemberDetailPanel } from "./extension-contracts";
 import { CategoryBadge, memberCategoryLabel } from "./extensions/fencing-categories";
 import { loadExtensionBundles } from "./extension-runtime";
 
@@ -72,6 +72,7 @@ export function App() {
   const groupPanels = uiContracts.listGroupPanels(extensionEnabled);
   const memberColumns = uiContracts.listMemberColumns(extensionEnabled);
   const documentPanels = uiContracts.listDocumentPanels(extensionEnabled);
+  const memberDetailPanels = uiContracts.listMemberDetailPanels(extensionEnabled);
 
   useEffect(() => {
     let active = true;
@@ -303,7 +304,7 @@ export function App() {
                 onCheckConnection={() => void checkConnection()}
               />
             )}
-            {view === "members" && <Members members={members} groups={groups} savingMemberId={savingMemberId} onSaveMember={updateMember} onRevertField={revertMemberField} onDocumentsChanged={loadData} onMemberAction={openExtensionAction} memberActions={memberActions} memberColumns={memberColumns} documentPanels={documentPanels} categoriesEnabled={uiContracts.memberColumns.isVisible("category", extensionEnabled)} />}
+            {view === "members" && <Members members={members} groups={groups} savingMemberId={savingMemberId} onSaveMember={updateMember} onRevertField={revertMemberField} onDocumentsChanged={loadData} onMemberAction={openExtensionAction} memberActions={memberActions} memberColumns={memberColumns} documentPanels={documentPanels} memberDetailPanels={memberDetailPanels} categoriesEnabled={uiContracts.memberColumns.isVisible("category", extensionEnabled)} />}
             {uiContracts.listViews(extensionEnabled)
               .filter((registration) => view === `ext:${registration.extensionId}`)
               .map((registration) => (
@@ -344,6 +345,7 @@ export function App() {
                 documentPanels={documentPanels}
                 memberActions={memberActions}
                 groupPanels={groupPanels}
+                memberDetailPanels={memberDetailPanels}
               />
             )}
             {view === "setup" && dashboard && (
@@ -640,6 +642,30 @@ function ExtensionMemberCell({ column, member }: { column: RegisteredMemberColum
   return <div ref={container} />;
 }
 
+function ExtensionMemberDetailPanel({ panel, member, onChanged }: {
+  panel: RegisteredMemberDetailPanel;
+  member: Member;
+  onChanged: () => Promise<void>;
+}) {
+  const container = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const parent = container.current;
+    const host = window.__GU_HOST__;
+    if (!parent || !host) return;
+    const node = document.createElement(panel.element) as HTMLElement & { hostApi?: unknown; member?: unknown };
+    node.hostApi = { request: host.request, requestBlob: host.requestBlob };
+    node.member = member;
+    const changed = () => void onChanged();
+    node.addEventListener("gu:data-changed", changed);
+    parent.appendChild(node);
+    return () => {
+      node.removeEventListener("gu:data-changed", changed);
+      node.remove();
+    };
+  }, [panel, member, onChanged]);
+  return <div className="member-detail-panel" ref={container} />;
+}
+
 function ExtensionDocumentPanel({ panel, member, field, onChanged }: {
   panel: RegisteredDocumentPanel;
   member: Member;
@@ -839,7 +865,8 @@ function Members({
   categoriesEnabled,
   memberActions,
   memberColumns,
-  documentPanels
+  documentPanels,
+  memberDetailPanels
 }: {
   members: Member[];
   groups: Group[];
@@ -852,6 +879,7 @@ function Members({
   memberActions: RegisteredMemberAction[];
   memberColumns: RegisteredMemberColumn[];
   documentPanels: RegisteredDocumentPanel[];
+  memberDetailPanels: RegisteredMemberDetailPanel[];
 }) {
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [selection, setSelection] = useState<Set<string>>(new Set());
@@ -989,6 +1017,7 @@ function Members({
           onMemberAction={onMemberAction}
           memberActions={memberActions}
           documentPanels={documentPanels}
+          memberDetailPanels={memberDetailPanels}
         />
       </Modal>}
     </section>
@@ -1009,7 +1038,8 @@ function MemberEditor({
   onDocumentsChanged,
   onMemberAction,
   memberActions,
-  documentPanels
+  documentPanels,
+  memberDetailPanels
 }: {
   member: Member;
   draft: MemberDraft;
@@ -1025,6 +1055,7 @@ function MemberEditor({
   onMemberAction: (extensionId: string, payload: unknown) => void;
   memberActions: RegisteredMemberAction[];
   documentPanels: RegisteredDocumentPanel[];
+  memberDetailPanels: RegisteredMemberDetailPanel[];
 }) {
   const change = (patch: Partial<MemberDraft>) => onDraftChange({ ...draft, ...patch });
   const changeCustom = (key: string, value: string) => change({
@@ -1041,6 +1072,7 @@ function MemberEditor({
         onClick={() => onMemberAction(action.extensionId, payload)}
       >{action.label}</button>;
     })}</div>
+    {memberDetailPanels.map((panel) => <ExtensionMemberDetailPanel key={panel.extensionId} panel={panel} member={member} onChanged={onDocumentsChanged} />)}
     <div className="member-fields">
       <label><FieldLabel label="Prénom" overridden={member.overriddenFields.includes("firstName")} saving={saving} onRevert={() => onRevert("firstName")} /><input required value={draft.firstName} onChange={(event) => change({ firstName: event.target.value })} /></label>
       <label><FieldLabel label="Nom" overridden={member.overriddenFields.includes("lastName")} saving={saving} onRevert={() => onRevert("lastName")} /><input required value={draft.lastName} onChange={(event) => change({ lastName: event.target.value })} /></label>
@@ -1193,7 +1225,8 @@ function Groups({
   memberColumns,
   documentPanels,
   memberActions,
-  groupPanels
+  groupPanels,
+  memberDetailPanels
 }: {
   groups: Group[];
   groupCriteria: GroupCriterion[];
@@ -1223,6 +1256,7 @@ function Groups({
   documentPanels: RegisteredDocumentPanel[];
   memberActions: RegisteredMemberAction[];
   groupPanels: RegisteredGroupPanel[];
+  memberDetailPanels: RegisteredMemberDetailPanel[];
 }) {
   const [targets, setTargets] = useState<Record<string, string>>({});
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
@@ -1397,7 +1431,7 @@ function Groups({
 
       {editingMemberId && editingDraft && (() => {
         const member = members.find((item) => item.id === editingMemberId);
-        return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onDocumentsChanged={onDocumentsChanged} onMemberAction={onMemberAction} memberActions={memberActions} documentPanels={documentPanels} /></Modal> : null;
+        return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onDocumentsChanged={onDocumentsChanged} onMemberAction={onMemberAction} memberActions={memberActions} documentPanels={documentPanels} memberDetailPanels={memberDetailPanels} /></Modal> : null;
       })()}
     </div>
   );

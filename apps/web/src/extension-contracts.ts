@@ -80,11 +80,23 @@ export type RegisteredDocumentPanel = {
   element: string;
 };
 
+/**
+ * Panneau qu'un module ajoute directement dans la fiche adhérent (l'écran "Modifier
+ * <adhérent>"), à côté des champs du noyau — pas un bouton qui ouvre une vue séparée
+ * (`registerMemberAction`), un fragment affiché en permanence sur place.
+ */
+export type RegisteredMemberDetailPanel = {
+  extensionId: string;
+  label: string;
+  element: string;
+};
+
 const registeredViews: RegisteredExtensionView[] = [];
 const registeredMemberActions: RegisteredMemberAction[] = [];
 const registeredGroupPanels: RegisteredGroupPanel[] = [];
 const registeredMemberColumns: RegisteredMemberColumn[] = [];
 const registeredDocumentPanels: RegisteredDocumentPanel[] = [];
+const registeredMemberDetailPanels: RegisteredMemberDetailPanel[] = [];
 
 /**
  * Contrats déclarés par les extensions et consultés par App.tsx à la place des identifiants
@@ -147,5 +159,14 @@ export const uiContracts = {
 
   listDocumentPanels(isExtensionEnabled: ExtensionEnabledLookup) {
     return registeredDocumentPanels.filter((panel) => isExtensionEnabled(panel.extensionId));
+  },
+
+  registerMemberDetailPanel(panel: RegisteredMemberDetailPanel) {
+    const index = registeredMemberDetailPanels.findIndex((entry) => entry.extensionId === panel.extensionId);
+    if (index >= 0) registeredMemberDetailPanels.splice(index, 1, panel); else registeredMemberDetailPanels.push(panel);
+  },
+
+  listMemberDetailPanels(isExtensionEnabled: ExtensionEnabledLookup) {
+    return registeredMemberDetailPanels.filter((panel) => isExtensionEnabled(panel.extensionId));
   }
 };

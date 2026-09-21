@@ -5,7 +5,8 @@ import {
   type RegisteredGroupPanel,
   type RegisteredMemberAction,
   type RegisteredMemberColumn,
-  type RegisteredDocumentPanel
+  type RegisteredDocumentPanel,
+  type RegisteredMemberDetailPanel
 } from "./extension-contracts";
 
 /**
@@ -21,6 +22,7 @@ export type ExtensionWebHost = {
   registerGroupPanel(panel: RegisteredGroupPanel): void;
   registerMemberColumn(column: RegisteredMemberColumn): void;
   registerDocumentPanel(panel: RegisteredDocumentPanel): void;
+  registerMemberDetailPanel(panel: RegisteredMemberDetailPanel): void;
 };
 
 declare global {
@@ -39,7 +41,8 @@ export function installExtensionHost() {
     registerMemberAction: (action) => uiContracts.registerMemberAction(action),
     registerGroupPanel: (panel) => uiContracts.registerGroupPanel(panel),
     registerMemberColumn: (column) => uiContracts.registerMemberColumn(column),
-    registerDocumentPanel: (panel) => uiContracts.registerDocumentPanel(panel)
+    registerDocumentPanel: (panel) => uiContracts.registerDocumentPanel(panel),
+    registerMemberDetailPanel: (panel) => uiContracts.registerMemberDetailPanel(panel)
   };
 }
 
