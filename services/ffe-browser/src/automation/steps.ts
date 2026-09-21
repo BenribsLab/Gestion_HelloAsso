@@ -5,8 +5,10 @@ import { findBestMatch, type FfeSearchCandidate, type MemberToMatch } from "./ma
 export class FfeSelectorNotFoundError extends Error {}
 export class FfeUnexpectedPageError extends Error {}
 
+export type LicensePath = "renewal" | "transfer" | "new";
+
 export interface SelectPersonInput extends MemberToMatch {
-  inStructureLast5Seasons: boolean;
+  licensePath: LicensePath;
 }
 
 export type SelectPersonResult =
@@ -39,8 +41,10 @@ export async function selectPerson(page: Page, baseUrl: string, input: SelectPer
   await page.goto(ffeUrls.etape1(baseUrl), { waitUntil: "domcontentloaded" });
   await ffeSelectors.choixDunePersonneButton(page).click();
 
+  // "Dans la structure" ne concerne que le renouvellement (déjà licencié dans ce club) — une
+  // mutation ou une nouvelle licence viennent forcément d'ailleurs ou de nulle part.
   const toggle = ffeSelectors.dansLaStructureToggle(page);
-  if (input.inStructureLast5Seasons) await toggle.check();
+  if (input.licensePath === "renewal") await toggle.check();
   else await toggle.uncheck();
 
   await ffeSelectors.searchField(page).fill(`${input.lastName} ${input.firstName}`);

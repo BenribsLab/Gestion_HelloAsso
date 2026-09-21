@@ -49,7 +49,7 @@ const selectMemberSchema = z.object({
   firstName: z.string().trim().min(1).max(100),
   lastName: z.string().trim().min(1).max(100),
   birthYear: z.number().int().min(1900).max(2100),
-  inStructureLast5Seasons: z.boolean(),
+  licensePath: z.enum(["renewal", "transfer", "new"]),
   // Utilisé uniquement si aucune correspondance n'est trouvée (bascule "+ Ajout d'une nouvelle
   // personne") : pré-remplissage au mieux, le reste est laissé à l'utilisateur (voir steps.ts).
   newPerson: z.object({
