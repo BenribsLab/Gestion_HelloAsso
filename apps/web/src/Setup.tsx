@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, type GroupRule, type GroupingPreview, type SetupData } from "./api";
+import { api, type GroupRule, type GroupingPreview, type HelloAssoSettings, type SetupData } from "./api";
 
 type GroupDraft = { localId: string; id?: string; name: string; rules: GroupRule[] };
 
-export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured: boolean; onImported: () => void }) {
+export function Setup({ helloassoConfigured, onImported, onConfigurationChanged }: { helloassoConfigured: boolean; onImported: () => void; onConfigurationChanged: () => void }) {
   const [data, setData] = useState<SetupData | null>(null);
   const [campaignSelection, setCampaignSelection] = useState<Set<string>>(new Set());
   const [fieldSelection, setFieldSelection] = useState<Set<string>>(new Set());
@@ -15,8 +15,19 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
   const [busy, setBusy] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [connection, setConnection] = useState<HelloAssoSettings | null>(null);
+  const [connectionDraft, setConnectionDraft] = useState({
+    environment: "production" as "production" | "sandbox",
+    clientId: "",
+    clientSecret: "",
+    organizationSlug: ""
+  });
 
-  useEffect(() => { void api.setup().then(applyData).catch(showError); }, []);
+  useEffect(() => {
+    void Promise.all([api.setup(), api.helloassoSettings()])
+      .then(([setupData, settings]) => { applyData(setupData); applyConnection(settings); })
+      .catch(showError);
+  }, []);
 
   const selectedCampaignCount = data?.campaigns.filter((campaign) => campaign.selected).length ?? 0;
   const visibleCampaigns = useMemo(
@@ -51,6 +62,60 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
   function showError(reason: unknown) {
     setError(reason instanceof Error ? reason.message : "Une erreur est survenue.");
     setBusy(null);
+  }
+
+  function applyConnection(settings: HelloAssoSettings) {
+    setConnection(settings);
+    setConnectionDraft({
+      environment: settings.environment,
+      clientId: settings.clientId,
+      clientSecret: "",
+      organizationSlug: settings.organizationSlug
+    });
+  }
+
+  async function saveConnection() {
+    setBusy("connection-save"); setError(null); setMessage(null);
+    try {
+      const currentConnection = connection;
+      const changedAssociation = currentConnection?.configured === true && (
+        currentConnection.environment !== connectionDraft.environment
+        || currentConnection.organizationSlug !== connectionDraft.organizationSlug.trim()
+      );
+      if (changedAssociation && !window.confirm(
+        "Changer d’association ou d’environnement désélectionnera les campagnes actuelles. Les adhérents déjà importés ne seront pas supprimés. Continuer ?"
+      )) return;
+      const settings = await api.saveHelloAssoSettings({
+        environment: connectionDraft.environment,
+        clientId: connectionDraft.clientId.trim(),
+        ...(connectionDraft.clientSecret ? { clientSecret: connectionDraft.clientSecret } : {}),
+        organizationSlug: connectionDraft.organizationSlug.trim(),
+        confirmOrganizationChange: changedAssociation
+      });
+      applyConnection(settings);
+      applyData(await api.setup());
+      onConfigurationChanged();
+      setMessage("La connexion HelloAsso est enregistrée dans cette instance.");
+    } catch (reason) { showError(reason); } finally { setBusy(null); }
+  }
+
+  async function testConnection() {
+    setBusy("connection-test"); setError(null); setMessage(null);
+    try {
+      const result = await api.checkHelloAsso();
+      setMessage(`Connexion réussie avec « ${result.organization.name} ».`);
+    } catch (reason) { showError(reason); } finally { setBusy(null); }
+  }
+
+  async function resetConnection() {
+    if (!window.confirm("Supprimer les réglages HelloAsso enregistrés dans cette instance ? Les adhérents existants seront conservés.")) return;
+    setBusy("connection-reset"); setError(null); setMessage(null);
+    try {
+      applyConnection(await api.resetHelloAssoSettings());
+      applyData(await api.setup());
+      onConfigurationChanged();
+      setMessage("Les réglages enregistrés ont été supprimés. La configuration d’environnement éventuelle est de nouveau utilisée.");
+    } catch (reason) { showError(reason); } finally { setBusy(null); }
   }
 
   async function discover() {
@@ -149,7 +214,7 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
 
   return <div className="setup-stack">
     <section className="setup-progress" aria-label="Étapes de configuration">
-      <ProgressStep number="1" label="Connexion" done={helloassoConfigured} />
+      <ProgressStep number="1" label="Connexion" done={connection?.configured ?? helloassoConfigured} />
       <ProgressStep number="2" label="Campagnes" done={selectedCampaignCount > 0} />
       <ProgressStep number="3" label="Champs" done={Boolean(data?.completedAt)} />
       <ProgressStep number="4" label="Groupes" done={Boolean(data?.groupsConfiguredAt)} />
@@ -162,15 +227,30 @@ export function Setup({ helloassoConfigured, onImported }: { helloassoConfigured
     <section className="panel setup-section">
       <StepHeading number="1" title="Connexion à HelloAsso" />
       <div className="connection-line">
-        <span className={helloassoConfigured ? "status-dot ok" : "status-dot"} />
-        <div><strong>{helloassoConfigured ? "Identifiants configurés" : "Configuration incomplète"}</strong><p>Les appels sont réalisés exclusivement par le serveur local.</p></div>
+        <span className={(connection?.configured ?? helloassoConfigured) ? "status-dot ok" : "status-dot"} />
+        <div><strong>{(connection?.configured ?? helloassoConfigured) ? "Identifiants configurés" : "Configuration incomplète"}</strong><p>Ces réglages appartiennent uniquement à cette association. Le Client Secret n’est jamais renvoyé au navigateur.</p></div>
       </div>
+      {connection && <div className="helloasso-settings-form">
+        {!connection.storageReady && <div className="alert error">Le stockage chiffré n’est pas prêt sur cette instance. L’hébergeur doit configurer la clé de chiffrement avant l’enregistrement.</div>}
+        <div className="helloasso-settings-grid">
+          <label>Environnement<select value={connectionDraft.environment} disabled={busy !== null} onChange={(event) => setConnectionDraft((current) => ({ ...current, environment: event.target.value as "production" | "sandbox" }))}><option value="production">HelloAsso réel</option><option value="sandbox">Sandbox de test</option></select></label>
+          <label>Slug de l’association<input value={connectionDraft.organizationSlug} disabled={busy !== null} placeholder="mon-association" autoComplete="off" onChange={(event) => setConnectionDraft((current) => ({ ...current, organizationSlug: event.target.value }))} /></label>
+          <label>Client ID<input value={connectionDraft.clientId} disabled={busy !== null} autoComplete="username" onChange={(event) => setConnectionDraft((current) => ({ ...current, clientId: event.target.value }))} /></label>
+          <label>Client Secret<input type="password" value={connectionDraft.clientSecret} disabled={busy !== null} autoComplete="new-password" placeholder={connection.secretConfigured ? "Laisser vide pour conserver le secret" : "Client Secret obligatoire"} onChange={(event) => setConnectionDraft((current) => ({ ...current, clientSecret: event.target.value }))} /><small>{connection.secretConfigured ? "Un secret est déjà enregistré ou fourni par l’environnement." : "Aucun secret n’est actuellement configuré."}</small></label>
+        </div>
+        <div className="connection-settings-actions">
+          <div><small>Source actuelle : {connection.source === "database" ? "réglages de cette association" : "variables d’environnement"}{connection.updatedAt ? ` · modifiée le ${formatDateTime(connection.updatedAt)}` : ""}</small></div>
+          <button className="primary" type="button" disabled={!connection.storageReady || busy !== null || !connectionDraft.clientId.trim() || !connectionDraft.organizationSlug.trim() || (!connection.secretConfigured && !connectionDraft.clientSecret)} onClick={() => void saveConnection()}>{busy === "connection-save" ? "Enregistrement…" : "Enregistrer"}</button>
+          <button className="secondary" type="button" disabled={!connection.configured || busy !== null} onClick={() => void testConnection()}>{busy === "connection-test" ? "Vérification…" : "Tester la connexion"}</button>
+          {connection.source === "database" && <button className="danger-link" type="button" disabled={busy !== null} onClick={() => void resetConnection()}>{busy === "connection-reset" ? "Suppression…" : "Revenir à la configuration serveur"}</button>}
+        </div>
+      </div>}
     </section>
 
     <section className="panel setup-section">
       <div className="setup-section-header">
         <StepHeading number="2" title="Choisir les campagnes d’adhésion" />
-        <button className="secondary" disabled={!helloassoConfigured || busy !== null} onClick={() => void discover()} type="button">
+        <button className="secondary" disabled={!(connection?.configured ?? helloassoConfigured) || busy !== null} onClick={() => void discover()} type="button">
           {busy === "discover" ? "Recherche…" : data?.campaigns.length ? "Actualiser" : "Rechercher sur HelloAsso"}
         </button>
       </div>

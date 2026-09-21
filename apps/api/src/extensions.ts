@@ -355,6 +355,25 @@ export class ExtensionRegistry {
       localIds
     );
 
+    // Une ancienne image pouvait livrer des modules intégrés. Après leur déplacement vers le
+    // catalogue privé, leurs lignes et leurs migrations restent utiles, mais une ligne ne doit
+    // jamais suffire à faire croire que le code est encore installé sur le disque.
+    const availableIds = [...this.manifests.keys()];
+    if (availableIds.length === 0) {
+      await this.database.query(`
+        UPDATE installed_extensions SET enabled = false,
+          error_message = 'Paquet absent : réinstallez cette extension depuis le catalogue.',
+          updated_at = now()
+      `);
+    } else {
+      await this.database.query(`
+        UPDATE installed_extensions SET enabled = false,
+          error_message = 'Paquet absent : réinstallez cette extension depuis le catalogue.',
+          updated_at = now()
+        WHERE NOT (id = ANY($1::text[]))
+      `, [availableIds]);
+    }
+
     if (!this.config.extensions.allowUnsigned) {
       await this.database.query(`
         UPDATE installed_extensions

@@ -350,6 +350,7 @@ export function App() {
               <Setup
                 helloassoConfigured={dashboard.helloasso.configured}
                 onImported={() => void loadData()}
+                onConfigurationChanged={() => void loadData()}
               />
             )}
             {view === "extensions" && extensionConfiguration && <Extensions items={extensions} configuration={extensionConfiguration} onChanged={loadData} />}

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { createHash } from "node:crypto";
 import type { AppConfig } from "./config.js";
 
 export type HelloAssoCampaign = {
@@ -45,13 +46,29 @@ export class HelloAssoError extends Error {
   }
 }
 
-export function createHelloAssoClient(config: AppConfig) {
+export type HelloAssoRuntimeConfig = AppConfig["helloasso"];
+type HelloAssoConfigSource = AppConfig | (() => Promise<HelloAssoRuntimeConfig> | HelloAssoRuntimeConfig);
+
+export function createHelloAssoClient(source: HelloAssoConfigSource) {
   let accessToken: string | undefined;
   let refreshToken: string | undefined;
   let expiresAt = 0;
+  let activeConfigurationHash = "";
 
-  async function requestToken() {
-    if (!config.helloasso.configured) {
+  async function configuration() {
+    const value = typeof source === "function" ? await source() : source.helloasso;
+    const fingerprint = createHash("sha256").update(JSON.stringify(value)).digest("hex");
+    if (activeConfigurationHash && activeConfigurationHash !== fingerprint) {
+      accessToken = undefined;
+      refreshToken = undefined;
+      expiresAt = 0;
+    }
+    activeConfigurationHash = fingerprint;
+    return value;
+  }
+
+  async function requestToken(current: HelloAssoRuntimeConfig) {
+    if (!current.configured) {
       throw new HelloAssoError("HelloAsso n'est pas encore configuré.", 409);
     }
 
@@ -61,11 +78,11 @@ export function createHelloAssoClient(config: AppConfig) {
       body.set("refresh_token", refreshToken);
     } else {
       body.set("grant_type", "client_credentials");
-      body.set("client_id", config.helloasso.clientId);
-      body.set("client_secret", config.helloasso.clientSecret);
+      body.set("client_id", current.clientId);
+      body.set("client_secret", current.clientSecret);
     }
 
-    const response = await fetch(`${config.helloasso.baseUrl}/oauth2/token`, {
+    const response = await fetch(`${current.baseUrl}/oauth2/token`, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body,
@@ -89,16 +106,17 @@ export function createHelloAssoClient(config: AppConfig) {
     return accessToken;
   }
 
-  async function getAccessToken() {
+  async function getAccessToken(current: HelloAssoRuntimeConfig) {
     if (accessToken && expiresAt > Date.now() + 30_000) {
       return accessToken;
     }
-    return requestToken();
+    return requestToken(current);
   }
 
   async function getJson(path: string, retry = true): Promise<unknown> {
-    const token = await getAccessToken();
-    const response = await fetch(`${config.helloasso.baseUrl}/v5${path}`, {
+    const current = await configuration();
+    const token = await getAccessToken(current);
+    const response = await fetch(`${current.baseUrl}/v5${path}`, {
       headers: {
         accept: "application/json",
         authorization: `Bearer ${token}`
@@ -189,7 +207,8 @@ export function createHelloAssoClient(config: AppConfig) {
   async function getDocument(urlValue: string) {
     let url = validatedDocumentUrl(urlValue);
     for (let redirect = 0; redirect < 3; redirect += 1) {
-      const token = await getAccessToken();
+      const current = await configuration();
+      const token = await getAccessToken(current);
       const response = await fetch(url, {
         headers: { authorization: `Bearer ${token}` },
         redirect: "manual",
@@ -236,10 +255,12 @@ export function createHelloAssoClient(config: AppConfig) {
   }
 
   return {
+    configuration,
     async checkConnection() {
-      const token = await getAccessToken();
+      const current = await configuration();
+      const token = await getAccessToken(current);
       const response = await fetch(
-        `${config.helloasso.baseUrl}/v5/organizations/${encodeURIComponent(config.helloasso.organizationSlug)}`,
+        `${current.baseUrl}/v5/organizations/${encodeURIComponent(current.organizationSlug)}`,
         {
           headers: {
             accept: "application/json",
@@ -271,17 +292,18 @@ export function createHelloAssoClient(config: AppConfig) {
         .parse(await response.json());
 
       return {
-        name: organization.name ?? config.helloasso.organizationSlug,
+        name: organization.name ?? current.organizationSlug,
         slug:
           organization.organizationSlug ??
           organization.slug ??
-          config.helloasso.organizationSlug
+          current.organizationSlug
       };
     },
 
     async listMembershipCampaigns(): Promise<HelloAssoCampaign[]> {
+      const current = await configuration();
       const values = await getAllPages(
-        `/organizations/${encodeURIComponent(config.helloasso.organizationSlug)}/forms?formTypes=Membership`
+        `/organizations/${encodeURIComponent(current.organizationSlug)}/forms?formTypes=Membership`
       );
       return values.flatMap((value) => {
         const result = z
@@ -304,11 +326,12 @@ export function createHelloAssoClient(config: AppConfig) {
     },
 
     async listMembershipItems(formSlug: string): Promise<HelloAssoMembershipItem[]> {
+      const current = await configuration();
       const [orderValues, itemValues] = await Promise.all([getAllPages(
-        `/organizations/${encodeURIComponent(config.helloasso.organizationSlug)}` +
+        `/organizations/${encodeURIComponent(current.organizationSlug)}` +
           `/forms/Membership/${encodeURIComponent(formSlug)}/orders?withDetails=true`
       ), getAllPages(
-        `/organizations/${encodeURIComponent(config.helloasso.organizationSlug)}` +
+        `/organizations/${encodeURIComponent(current.organizationSlug)}` +
           `/forms/Membership/${encodeURIComponent(formSlug)}/items?withDetails=true`
       )]);
       const items = new Map<number, HelloAssoMembershipItem>();

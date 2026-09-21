@@ -29,6 +29,14 @@ describe("loadConfig", () => {
       loadConfig({ ...baseEnvironment, HELLOASSO_CLIENT_ID: "client" })
     ).toThrow(/incomplète/);
   });
+
+  it("charge une clé de chiffrement de réglages en base64", () => {
+    const config = loadConfig({
+      ...baseEnvironment,
+      SETTINGS_ENCRYPTION_KEY: Buffer.alloc(32, 4).toString("base64")
+    });
+    expect(config.settingsEncryptionKey).toEqual(Buffer.alloc(32, 4));
+  });
 });
 
 describe("configuration HelloAsso", () => {

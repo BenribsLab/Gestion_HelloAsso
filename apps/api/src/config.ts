@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { readFileSync } from "node:fs";
+import { parseEncryptionKey } from "./secure-settings.js";
 
 const environmentSchema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
@@ -33,6 +34,8 @@ const environmentSchema = z.object({
   BOOTSTRAP_ADMIN_NAME: z.string().trim().max(100).default("Administrateur"),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().optional().default(""),
   BOOTSTRAP_ADMIN_PASSWORD_FILE: z.string().trim().optional().default(""),
+  SETTINGS_ENCRYPTION_KEY: z.string().trim().optional().default(""),
+  SETTINGS_ENCRYPTION_KEY_FILE: z.string().trim().optional().default(""),
   EXTENSIONS_BUNDLED_DIRECTORY: z.string().trim().min(1).default("bundled-plugins"),
   EXTENSIONS_DIRECTORY: z.string().trim().min(1).default("plugins"),
   EXTENSION_CATALOG_URL: z.union([z.url(), z.literal("")]).optional().default(""),
@@ -56,6 +59,11 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const smtpPassword = secretValue("mot de passe SMTP", parsed.SMTP_PASSWORD, parsed.SMTP_PASSWORD_FILE);
   const bootstrapPassword = secretValue("mot de passe administrateur", parsed.BOOTSTRAP_ADMIN_PASSWORD, parsed.BOOTSTRAP_ADMIN_PASSWORD_FILE);
   const extensionLicensePublicKey = secretValue("clé publique des extensions", parsed.EXTENSION_LICENSE_PUBLIC_KEY, parsed.EXTENSION_LICENSE_PUBLIC_KEY_FILE);
+  const settingsEncryptionKey = parseEncryptionKey(secretValue(
+    "clé de chiffrement des réglages",
+    parsed.SETTINGS_ENCRYPTION_KEY,
+    parsed.SETTINGS_ENCRYPTION_KEY_FILE
+  ));
   const helloassoValues = [
     parsed.HELLOASSO_CLIENT_ID,
     helloAssoSecret,
@@ -73,6 +81,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
     nodeEnv: parsed.NODE_ENV,
     port: parsed.PORT,
     databaseUrl,
+    settingsEncryptionKey,
     trustProxy: parsed.TRUST_PROXY === "true",
     helloasso: {
       baseUrl: parsed.HELLOASSO_BASE_URL.replace(/\/$/, ""),

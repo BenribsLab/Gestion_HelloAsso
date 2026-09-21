@@ -5,6 +5,7 @@ import { createHelloAssoClient } from "./helloasso.js";
 const config: AppConfig = {
   port: 3000,
   databaseUrl: "postgres://example",
+  settingsEncryptionKey: null,
   nodeEnv: "test",
   trustProxy: false,
   helloasso: {

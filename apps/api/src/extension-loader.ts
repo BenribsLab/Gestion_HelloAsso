@@ -22,6 +22,7 @@ import type {
 import { refreshDynamicGroups } from "./dynamic-groups.js";
 import { safeDownloadName, zipBuffer } from "./archive-utils.js";
 import { runExtensionMigrations } from "./migrations.js";
+import type { SecureSettingsStore } from "./secure-settings.js";
 
 type LoadOptions = {
   server: FastifyInstance;
@@ -30,6 +31,7 @@ type LoadOptions = {
   contracts: ExtensionContracts;
   registry: ExtensionRegistry;
   helloasso: ReturnType<typeof createHelloAssoClient>;
+  settings: SecureSettingsStore;
 };
 
 /**
@@ -104,6 +106,13 @@ function buildHost(options: LoadOptions, manifest: ExtensionManifest): Extension
     log: options.server.log,
     contracts: options.contracts,
     config,
+    settings: {
+      read: () => options.settings.read(`extension.${manifest.id}`),
+      write: (publicValue, secretValue, userId = null) =>
+        options.settings.write(`extension.${manifest.id}`, publicValue, secretValue, userId),
+      delete: () => options.settings.delete(`extension.${manifest.id}`),
+      canWriteSecrets: () => options.settings.canWriteSecrets()
+    },
     core,
     isExtensionEnabled: (extensionId: string) => options.registry.isEnabled(extensionId),
     route(

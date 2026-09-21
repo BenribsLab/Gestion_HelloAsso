@@ -30,11 +30,14 @@ services:
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Renseignez BOOTSTRAP_ADMIN_EMAIL dans .env.production}
       BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrateur CEY}
       BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
+      SETTINGS_ENCRYPTION_KEY: ""
+      SETTINGS_ENCRYPTION_KEY_FILE: /run/secrets/settings_encryption_key
     secrets:
       - postgres_password
       - helloasso_client_secret
       - smtp_password
       - bootstrap_admin_password
+      - settings_encryption_key
     read_only: true
     tmpfs:
       - /tmp:size=32m,mode=1777
@@ -61,3 +64,5 @@ secrets:
     file: ./secrets/smtp_password.txt
   bootstrap_admin_password:
     file: ./secrets/bootstrap_admin_password.txt
+  settings_encryption_key:
+    file: ./secrets/settings_encryption_key.txt

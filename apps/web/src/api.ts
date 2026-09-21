@@ -8,6 +8,17 @@ export type DashboardData = {
   };
 };
 
+export type HelloAssoSettings = {
+  configured: boolean;
+  environment: "sandbox" | "production";
+  clientId: string;
+  organizationSlug: string;
+  secretConfigured: boolean;
+  source: "database" | "environment";
+  storageReady: boolean;
+  updatedAt: string | null;
+};
+
 export type Extension = {
   schemaVersion: 1;
   id: string;
@@ -312,6 +323,21 @@ export const api = {
       "/api/helloasso/check",
       { method: "POST" }
     ),
+  helloassoSettings: () => request<HelloAssoSettings>("/api/settings/helloasso"),
+  saveHelloAssoSettings: (input: {
+    environment: "sandbox" | "production";
+    clientId: string;
+    clientSecret?: string;
+    organizationSlug: string;
+    confirmOrganizationChange?: boolean;
+  }) => request<HelloAssoSettings>("/api/settings/helloasso", {
+    method: "PUT",
+    body: JSON.stringify(input)
+  }),
+  resetHelloAssoSettings: () => request<HelloAssoSettings>("/api/settings/helloasso", {
+    method: "DELETE",
+    body: JSON.stringify({ confirm: true })
+  }),
   setup: () => request<SetupData>("/api/setup"),
   discoverCampaigns: () =>
     request<SetupData>("/api/helloasso/discover-campaigns", { method: "POST" }),

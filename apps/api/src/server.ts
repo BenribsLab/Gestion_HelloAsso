@@ -8,6 +8,8 @@ import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db.js";
 import { createHelloAssoClient, HelloAssoError } from "./helloasso.js";
+import { HelloAssoSettingsError, HelloAssoSettingsService } from "./helloasso-settings.js";
+import { SecureSettingsError, SecureSettingsStore } from "./secure-settings.js";
 import { configureDynamicGroups, getDynamicGroupCriteria, refreshDynamicGroups, validateDynamicCriterion } from "./dynamic-groups.js";
 import { fencingCategoryError, normalizeBirthDate } from "./fencing-category.js";
 import { installSecurity, prepareAuthentication } from "./security.js";
@@ -34,7 +36,9 @@ import {
 
 const config = loadConfig();
 const database = createDatabase(config);
-const helloasso = createHelloAssoClient(config);
+const secureSettings = new SecureSettingsStore(database, config.settingsEncryptionKey);
+const helloassoSettings = new HelloAssoSettingsService(secureSettings, config.helloasso);
+const helloasso = createHelloAssoClient(async () => (await helloassoSettings.current()).config);
 const server = Fastify({
   logger: true,
   trustProxy: config.trustProxy,
@@ -58,7 +62,7 @@ await installSecurity(server, database, config);
 const extensions = await ExtensionRegistry.create(database, config);
 const contracts = new ExtensionContracts();
 configureDynamicGroups({ contracts, isExtensionEnabled: (id) => extensions.isEnabled(id) });
-await loadExtensions({ server, database, config, contracts, registry: extensions, helloasso });
+await loadExtensions({ server, database, config, contracts, registry: extensions, helloasso, settings: secureSettings });
 registerExtensionInstaller(server, database, config, extensions);
 
 server.addHook("preHandler", async (request, reply) => {
@@ -121,6 +125,14 @@ const memberOverrideFieldSchema = z.object({
 const memberDocumentSchema = z.object({ memberId: z.uuid(), fieldKey: z.string().min(1).max(100) });
 const extensionIdSchema = z.object({ extensionId: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80) });
 const extensionStateSchema = z.object({ enabled: z.boolean() });
+const helloassoSettingsSchema = z.object({
+  environment: z.enum(["production", "sandbox"]),
+  clientId: z.string().trim().min(3).max(300),
+  clientSecret: z.string().max(500).optional(),
+  organizationSlug: z.string().trim().min(2).max(200).regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/),
+  confirmOrganizationChange: z.boolean().optional().default(false)
+});
+const settingsResetSchema = z.object({ confirm: z.literal(true) });
 
 server.get("/api/health", async () => {
   await database.query("SELECT 1");
@@ -177,18 +189,19 @@ server.get("/api/extensions/:extensionId/assets/*", async (request, reply) => {
 });
 
 server.get("/api/dashboard", async () => {
-  const [memberResult, groupResult] = await Promise.all([
+  const [memberResult, groupResult, helloassoStatus] = await Promise.all([
     database.query<{ count: string }>("SELECT count(*)::text AS count FROM members"),
-    database.query<{ count: string }>("SELECT count(*)::text AS count FROM groups")
+    database.query<{ count: string }>("SELECT count(*)::text AS count FROM groups"),
+    helloassoSettings.status()
   ]);
 
   return {
     membersCount: Number(memberResult.rows[0]?.count ?? 0),
     groupsCount: Number(groupResult.rows[0]?.count ?? 0),
     helloasso: {
-      configured: config.helloasso.configured,
-      environment: config.helloasso.baseUrl.includes("sandbox") ? "sandbox" : "production",
-      organizationSlug: config.helloasso.organizationSlug || null
+      configured: helloassoStatus.configured,
+      environment: helloassoStatus.environment,
+      organizationSlug: helloassoStatus.organizationSlug || null
     }
   };
 });
@@ -676,6 +689,40 @@ server.delete("/api/members/:memberId/documents/:fieldKey/local", async (request
   return { revertedToHelloAsso: true };
 });
 
+server.get("/api/settings/helloasso", async () => helloassoSettings.status());
+
+server.put("/api/settings/helloasso", {
+  config: { rateLimit: { max: 10, timeWindow: "1 hour" } }
+}, async (request, reply) => {
+  const input = helloassoSettingsSchema.parse(request.body);
+  const before = await helloassoSettings.current();
+  const nextBaseUrl = input.environment === "sandbox"
+    ? "https://api.helloasso-sandbox.com"
+    : "https://api.helloasso.com";
+  const organizationChanged = before.config.configured && (
+    before.config.organizationSlug !== input.organizationSlug || before.config.baseUrl !== nextBaseUrl
+  );
+  if (organizationChanged && !input.confirmOrganizationChange) {
+    return reply.code(409).send({
+      message: "Changer d'association ou d'environnement désactivera la sélection actuelle des campagnes. Confirmez ce changement."
+    });
+  }
+  const result = await helloassoSettings.save(input, request.authUser?.id ?? null);
+  if (result.organizationChanged) await resetHelloAssoSetup();
+  return result.status;
+});
+
+server.delete("/api/settings/helloasso", async (request) => {
+  settingsResetSchema.parse(request.body);
+  const before = await helloassoSettings.current();
+  const status = await helloassoSettings.reset();
+  const after = await helloassoSettings.current();
+  if (before.config.organizationSlug !== after.config.organizationSlug || before.config.baseUrl !== after.config.baseUrl) {
+    await resetHelloAssoSetup();
+  }
+  return status;
+});
+
 server.post("/api/helloasso/check", async (_request, reply) => {
   const organization = await helloasso.checkConnection();
   return reply.send({ connected: true, organization });
@@ -727,6 +774,9 @@ server.setErrorHandler((error, _request, reply) => {
   if (error instanceof HelloAssoError) {
     return reply.code(error.statusCode).send({ message: error.message });
   }
+  if (error instanceof HelloAssoSettingsError || error instanceof SecureSettingsError) {
+    return reply.code(error.statusCode).send({ message: error.message });
+  }
   if (error instanceof ExtensionRegistryError) {
     return reply.code(error.statusCode).send({ message: error.message });
   }
@@ -749,6 +799,21 @@ server.setErrorHandler((error, _request, reply) => {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function resetHelloAssoSetup() {
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("UPDATE helloasso_campaigns SET selected = false, updated_at = now() WHERE selected = true");
+    await client.query("DELETE FROM app_settings WHERE key IN ('helloasso_setup', 'helloasso_groups')");
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 function normalizedFieldLabel(value: string) {

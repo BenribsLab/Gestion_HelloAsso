@@ -339,6 +339,12 @@ th { color: #71807e; font-size: 13px; }
 .step-heading h2, .step-heading p { margin-bottom: 0; }
 .connection-line { justify-content: flex-start; }
 .connection-line p { margin: 3px 0 0; color: #71807e; }
+.helloasso-settings-form { display: grid; gap: 16px; padding-top: 18px; border-top: 1px solid #e0e7e1; }
+.helloasso-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.helloasso-settings-grid label { align-content: start; }
+.helloasso-settings-grid small { color: #71807e; font-weight: 400; }
+.connection-settings-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
+.connection-settings-actions > div { flex: 1 1 260px; color: #71807e; }
 .status-dot { width: 11px; height: 11px; border-radius: 50%; background: #c3cbc8; }
 .status-dot.ok { background: #78a62c; box-shadow: 0 0 0 5px rgb(120 166 44 / 13%); }
 .secondary { padding: 10px 14px; border: 1px solid #cdd6d1; border-radius: 10px; background: white; color: #29484b; font-weight: 700; }
@@ -407,7 +413,7 @@ th { color: #71807e; font-size: 13px; }
   .connection-panel { align-items: flex-start; flex-direction: column; }
   .group-detail .section-heading { align-items: flex-start; }
   .group-detail-actions { width: 100%; justify-content: space-between; }
-  .schedule-row, .attendance-form, .holiday-list, .member-fields, .custom-fields-grid { grid-template-columns: 1fr; }
+  .schedule-row, .attendance-form, .holiday-list, .member-fields, .custom-fields-grid, .helloasso-settings-grid { grid-template-columns: 1fr; }
   .subsection-heading, .print-toolbar { align-items: stretch; flex-direction: column; }
   .smtp-status, .recipient-preview { align-items: stretch; flex-direction: column; }
   .category-settings, .category-settings form { align-items: stretch; flex-direction: column; }

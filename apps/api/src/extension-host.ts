@@ -72,6 +72,21 @@ export interface ExtensionHostConfig {
   smtp?: AppConfig["smtp"];
 }
 
+export interface ExtensionHostSettings {
+  read<TPublic extends object, TSecret extends object>(): Promise<{
+    publicValue: TPublic;
+    secretValue: TSecret | null;
+    updatedAt: Date;
+  } | null>;
+  write<TPublic extends object, TSecret extends object>(
+    publicValue: TPublic,
+    secretValue: TSecret | null,
+    userId?: string | null
+  ): Promise<void>;
+  delete(): Promise<void>;
+  canWriteSecrets(): boolean;
+}
+
 export interface ExtensionHostCore {
   refreshDynamicGroups?: (database: ExtensionQueryable) => Promise<void>;
   /**
@@ -96,6 +111,8 @@ export interface ExtensionServerHost {
   readonly log: Pick<Console, "info" | "warn" | "error">;
   readonly contracts: ExtensionContracts;
   readonly config: ExtensionHostConfig;
+  /** Stockage chiffré, automatiquement isolé dans l'espace de noms du module. */
+  readonly settings: ExtensionHostSettings;
   readonly core: ExtensionHostCore;
   /** Pour les dépendances facultatives : un module peut consulter l'état d'un autre. */
   isExtensionEnabled(extensionId: string): boolean;

@@ -45,12 +45,15 @@ Protéger ce fichier avec des droits limités au propriétaire.
 
 ## 3. Créer les secrets
 
-Créer le répertoire `/opt/cey-gestion/secrets` et quatre fichiers lisibles uniquement par le propriétaire :
+Créer le répertoire `/opt/cey-gestion/secrets` et cinq fichiers lisibles uniquement par le propriétaire :
 
 - `postgres_password.txt` : mot de passe aléatoire long et unique ;
 - `helloasso_client_secret.txt` : secret fourni par HelloAsso ;
 - `smtp_password.txt` : mot de passe de la boîte d'envoi ;
 - `bootstrap_admin_password.txt` : premier mot de passe administrateur, avec au moins 14 caractères.
+- `settings_encryption_key.txt` : 32 octets aléatoires encodés en base64, par exemple avec
+  `openssl rand -base64 32`. Cette clé chiffre les identifiants saisis dans l'interface et doit
+  impérativement être conservée avec les sauvegardes.
 
 Ne pas ajouter de saut de ligne inutile, ne jamais versionner ces fichiers et ne pas transmettre leur contenu dans un ticket ou une capture d'écran.
 
@@ -66,7 +69,7 @@ docker compose --env-file .env.production \
 
 Au premier démarrage, l'administrateur défini dans `.env.production` est créé. Aux démarrages suivants, le mot de passe d'amorçage n'écrase jamais le mot de passe enregistré dans la base.
 
-Se connecter immédiatement, ouvrir le menu du compte et remplacer le mot de passe initial. Cette opération déconnecte les autres sessions.
+Se connecter immédiatement, ouvrir le menu du compte et remplacer le mot de passe initial. Cette opération déconnecte les autres sessions. La connexion HelloAsso se configure ensuite dans l'assistant de l'instance ; le secret y est chiffré et n'est jamais renvoyé au navigateur.
 
 ## 5. Activer HTTPS
 
