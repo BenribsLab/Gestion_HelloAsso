@@ -1,7 +1,5 @@
-import type { Database } from "./db.js";
-import { fencingCategoryError, normalizeBirthDate } from "./fencing-category.js";
-
-type Queryable = Pick<Database, "query">;
+import type { ExtensionQueryable } from "@gu/extension-host";
+import { fencingCategoryError, normalizeBirthDate } from "./birth-date.js";
 
 export type CategoryDefinition = {
   id: string;
@@ -13,7 +11,7 @@ export type CategoryDefinition = {
 
 const seasonInitializations = new Map<number, Promise<void>>();
 
-export async function getCategorySeason(database: Queryable, reference = new Date()) {
+export async function getCategorySeason(database: ExtensionQueryable, reference = new Date()) {
   const settingsResult = await database.query<{ month: number; day: number }>(`
     SELECT rollover_month::int AS month, rollover_day::int AS day
     FROM fencing_category_settings WHERE singleton = true
@@ -38,7 +36,7 @@ export async function getCategorySeason(database: Queryable, reference = new Dat
   };
 }
 
-export async function getCategoryDefinitions(database: Queryable, reference = new Date()) {
+export async function getCategoryDefinitions(database: ExtensionQueryable, reference = new Date()) {
   const season = await getCategorySeason(database, reference);
   await ensureSeasonCategories(database, season.startYear, season.endYear);
   const result = await database.query<CategoryDefinition>(`
@@ -55,7 +53,7 @@ export async function getCategoryDefinitions(database: Queryable, reference = ne
   return result.rows;
 }
 
-export async function getCategoryConfiguration(database: Queryable, reference = new Date()) {
+export async function getCategoryConfiguration(database: ExtensionQueryable, reference = new Date()) {
   const season = await getCategorySeason(database, reference);
   const definitions = await getCategoryDefinitions(database, reference);
   const membersResult = await database.query<{ birthDate: string | null }>(`
@@ -95,7 +93,7 @@ export function categoryForBirthDate(
   )?.name ?? null;
 }
 
-async function ensureSeasonCategories(database: Queryable, startYear: number, endYear: number) {
+async function ensureSeasonCategories(database: ExtensionQueryable, startYear: number, endYear: number) {
   const existing = seasonInitializations.get(startYear);
   if (existing) return existing;
   const initialization = initializeSeasonCategories(database, startYear, endYear);
@@ -108,7 +106,7 @@ async function ensureSeasonCategories(database: Queryable, startYear: number, en
   }
 }
 
-async function initializeSeasonCategories(database: Queryable, startYear: number, endYear: number) {
+async function initializeSeasonCategories(database: ExtensionQueryable, startYear: number, endYear: number) {
   const seasonResult = await database.query<{ seasonStartYear: number }>(
     `INSERT INTO fencing_category_seasons (season_start_year)
      VALUES ($1)

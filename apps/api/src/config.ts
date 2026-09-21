@@ -32,7 +32,15 @@ const environmentSchema = z.object({
   BOOTSTRAP_ADMIN_EMAIL: z.union([z.email(), z.literal("")]).optional().default(""),
   BOOTSTRAP_ADMIN_NAME: z.string().trim().max(100).default("Administrateur"),
   BOOTSTRAP_ADMIN_PASSWORD: z.string().optional().default(""),
-  BOOTSTRAP_ADMIN_PASSWORD_FILE: z.string().trim().optional().default("")
+  BOOTSTRAP_ADMIN_PASSWORD_FILE: z.string().trim().optional().default(""),
+  EXTENSIONS_BUNDLED_DIRECTORY: z.string().trim().min(1).default("bundled-plugins"),
+  EXTENSIONS_DIRECTORY: z.string().trim().min(1).default("plugins"),
+  EXTENSION_CATALOG_URL: z.union([z.url(), z.literal("")]).optional().default(""),
+  EXTENSION_LICENSE_TOKEN: z.string().trim().optional().default(""),
+  EXTENSION_LICENSE_PUBLIC_KEY: z.string().trim().optional().default(""),
+  EXTENSION_LICENSE_PUBLIC_KEY_FILE: z.string().trim().optional().default(""),
+  EXTENSION_OFFLINE_GRACE_DAYS: z.coerce.number().int().min(0).max(365).default(30),
+  EXTENSION_ALLOW_UNSIGNED: z.enum(["true", "false"]).default("false")
 });
 
 export type AppConfig = ReturnType<typeof loadConfig>;
@@ -47,6 +55,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const helloAssoSecret = secretValue("secret HelloAsso", parsed.HELLOASSO_CLIENT_SECRET, parsed.HELLOASSO_CLIENT_SECRET_FILE);
   const smtpPassword = secretValue("mot de passe SMTP", parsed.SMTP_PASSWORD, parsed.SMTP_PASSWORD_FILE);
   const bootstrapPassword = secretValue("mot de passe administrateur", parsed.BOOTSTRAP_ADMIN_PASSWORD, parsed.BOOTSTRAP_ADMIN_PASSWORD_FILE);
+  const extensionLicensePublicKey = secretValue("clé publique des extensions", parsed.EXTENSION_LICENSE_PUBLIC_KEY, parsed.EXTENSION_LICENSE_PUBLIC_KEY_FILE);
   const helloassoValues = [
     parsed.HELLOASSO_CLIENT_ID,
     helloAssoSecret,
@@ -92,6 +101,15 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
       bootstrapAdminEmail: parsed.BOOTSTRAP_ADMIN_EMAIL.toLocaleLowerCase("fr"),
       bootstrapAdminName: parsed.BOOTSTRAP_ADMIN_NAME,
       bootstrapAdminPassword: bootstrapPassword
+    },
+    extensions: {
+      bundledDirectory: parsed.EXTENSIONS_BUNDLED_DIRECTORY,
+      directory: parsed.EXTENSIONS_DIRECTORY,
+      catalogUrl: parsed.EXTENSION_CATALOG_URL || null,
+      licenseToken: parsed.EXTENSION_LICENSE_TOKEN || null,
+      licensePublicKey: extensionLicensePublicKey || null,
+      offlineGraceDays: parsed.EXTENSION_OFFLINE_GRACE_DAYS,
+      allowUnsigned: parsed.EXTENSION_ALLOW_UNSIGNED === "true"
     }
   };
 }

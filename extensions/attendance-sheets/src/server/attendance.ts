@@ -1,13 +1,14 @@
 import { z } from "zod";
-import { categoryForBirthDate, getCategoryDefinitions, getCategorySeason } from "./categories.js";
-import type { Database } from "./db.js";
-import { fencingCategoryError, normalizeBirthDate } from "./fencing-category.js";
+import type { ExtensionDatabase, ExtensionQueryable } from "@gu/extension-host";
+import { normalizeBirthDate } from "./birth-date.js";
 
-export type SchoolHoliday = {
-  name: string;
-  startDate: string;
-  endDate: string;
-};
+export type SchoolHoliday = { name: string; startDate: string; endDate: string };
+
+/** Ce que le noyau expose une fois `fencing-categories` interrogée — utilisé seulement s'il est actif. */
+export type MemberCategoryContext = {
+  season: string;
+  compute(birthDate: string | null): { fencingCategory: string | null; categoryError: string | null };
+} | null;
 
 const calendarResponseSchema = z.object({
   results: z.array(z.object({
@@ -52,13 +53,13 @@ export async function getSchoolHolidays(startDate: string, endDate: string) {
 }
 
 export async function getAttendanceSheet(
-  database: Database,
+  database: ExtensionQueryable,
   groupId: string,
   startDate: string,
-  endDate: string
+  endDate: string,
+  categoryContext: MemberCategoryContext
 ) {
-  const seasonReference = new Date(`${startDate}T12:00:00Z`);
-  const [groupResult, schedulesResult, membersResult, attendanceResult, holidays, categoryDefinitions, categorySeason] = await Promise.all([
+  const [groupResult, schedulesResult, membersResult, attendanceResult, holidays] = await Promise.all([
     database.query<{ id: string; name: string; createdAt: Date }>(
       `SELECT id, name, created_at AS "createdAt" FROM groups WHERE id = $1`,
       [groupId]
@@ -98,9 +99,7 @@ export async function getAttendanceSheet(
        WHERE group_id = $1 AND session_date BETWEEN $2::date AND $3::date`,
       [groupId, startDate, endDate]
     ),
-    getSchoolHolidays(startDate, endDate),
-    getCategoryDefinitions(database, seasonReference),
-    getCategorySeason(database, seasonReference)
+    getSchoolHolidays(startDate, endDate)
   ]);
   const group = groupResult.rows[0];
   if (!group) return null;
@@ -122,11 +121,10 @@ export async function getAttendanceSheet(
       return {
         ...member,
         birthDate,
-        fencingCategory: categoryForBirthDate(birthDate, categoryDefinitions, seasonReference),
-        categoryError: fencingCategoryError(birthDate, seasonReference)
+        ...(categoryContext?.compute(birthDate) ?? { fencingCategory: null, categoryError: null })
       };
     }),
-    fencingSeason: categorySeason.label,
+    fencingSeason: categoryContext?.season ?? null,
     holidays,
     sessions,
     attendance: attendanceResult.rows,
@@ -136,16 +134,11 @@ export async function getAttendanceSheet(
 }
 
 export async function saveAttendance(
-  database: Database,
+  database: ExtensionDatabase,
   groupId: string,
   startDate: string,
   endDate: string,
-  records: Array<{
-    memberId: string;
-    date: string;
-    startTime: string;
-    status: "present" | "absent" | "excused";
-  }>
+  records: Array<{ memberId: string; date: string; startTime: string; status: "present" | "absent" | "excused" }>
 ) {
   const client = await database.connect();
   try {

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "id": "attendance-sheets",
+  "name": "Feuilles de présence",
+  "description": "Créneaux hebdomadaires, vacances scolaires, génération et saisie des feuilles de présence.",
+  "version": "1.0.0",
+  "core": { "minimum": "0.1.0" },
+  "dependencies": [],
+  "optionalDependencies": ["fencing-categories"],
+  "capabilities": ["navigation", "group-panel"],
+  "entitlementKey": "attendance-sheets",
+  "defaultEnabled": true,
+  "entrypoints": {
+    "server": "server/index.mjs",
+    "web": "web/index.js",
+    "styles": "web/styles.css"
+  },
+  "migrations": ["001_attendance_records_index.sql"],
+  "routes": [
+    "/api/school-holidays",
+    "/api/groups/:groupId/schedules",
+    "/api/groups/:groupId/attendance-sheet",
+    "/api/groups/:groupId/attendance"
+  ]
+}

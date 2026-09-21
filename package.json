@@ -6,9 +6,11 @@
     "apps/*"
   ],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "npm run build:extensions && npm run build --workspaces --if-present",
+    "build:extensions": "node extensions/build.mjs",
+    "package:extension": "node extensions/package.mjs",
     "test": "npm run test --workspaces --if-present",
-    "typecheck": "npm run typecheck --workspaces --if-present"
+    "typecheck": "npm run typecheck --workspaces --if-present && tsc -p extensions/tsconfig.json"
   },
   "engines": {
     "node": ">=24"

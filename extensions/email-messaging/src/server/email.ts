@@ -1,7 +1,18 @@
 import nodemailer from "nodemailer";
 import { z } from "zod";
-import type { AppConfig } from "./config.js";
-import type { Database } from "./db.js";
+import type { ExtensionQueryable } from "@gu/extension-host";
+
+export type SmtpConfig = {
+  host: string;
+  port: number;
+  secure: boolean;
+  user: string;
+  password: string;
+  fromEmail: string;
+  fromName: string;
+  replyTo: string | null;
+  configured: boolean;
+};
 
 export type EmailTarget =
   | { type: "all" }
@@ -12,20 +23,20 @@ type Recipient = { email: string; memberNames: string[] };
 
 const emailSchema = z.email();
 
-export function emailConfiguration(config: AppConfig) {
+export function emailConfiguration(smtp: SmtpConfig) {
   return {
-    configured: config.smtp.configured,
-    host: config.smtp.host,
-    port: config.smtp.port,
-    secure: config.smtp.secure,
-    fromEmail: config.smtp.fromEmail || null,
-    fromName: config.smtp.fromName,
-    replyTo: config.smtp.replyTo
+    configured: smtp.configured,
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    fromEmail: smtp.fromEmail || null,
+    fromName: smtp.fromName,
+    replyTo: smtp.replyTo
   };
 }
 
-export async function verifyEmailConnection(config: AppConfig) {
-  const transporter = createTransporter(config);
+export async function verifyEmailConnection(smtp: SmtpConfig) {
+  const transporter = createTransporter(smtp);
   try {
     await transporter.verify();
   } finally {
@@ -33,7 +44,7 @@ export async function verifyEmailConnection(config: AppConfig) {
   }
 }
 
-export async function previewRecipients(database: Database, target: EmailTarget) {
+export async function previewRecipients(database: ExtensionQueryable, target: EmailTarget) {
   const result = await resolveRecipients(database, target);
   return {
     targetLabel: result.targetLabel,
@@ -44,11 +55,11 @@ export async function previewRecipients(database: Database, target: EmailTarget)
 }
 
 export async function sendEmailMessage(
-  database: Database,
-  config: AppConfig,
+  database: ExtensionQueryable,
+  smtp: SmtpConfig,
   input: { subject: string; body: string; target: EmailTarget }
 ) {
-  if (!config.smtp.configured) throw new Error("L'envoi SMTP n'est pas configuré dans le fichier .env.");
+  if (!smtp.configured) throw new Error("L'envoi SMTP n'est pas configuré dans le fichier .env.");
   const resolved = await resolveRecipients(database, input.target);
   if (resolved.recipients.length === 0) throw new Error("Aucune adresse e-mail valide ne correspond à cette sélection.");
   const messageResult = await database.query<{ id: string }>(
@@ -56,14 +67,7 @@ export async function sendEmailMessage(
        (subject, body, target_type, target_group_id, target_label, status, recipients_count)
      VALUES ($1, $2, $3, $4, $5, 'sending', $6)
      RETURNING id`,
-    [
-      input.subject,
-      input.body,
-      input.target.type,
-      null,
-      resolved.targetLabel,
-      resolved.recipients.length
-    ]
+    [input.subject, input.body, input.target.type, null, resolved.targetLabel, resolved.recipients.length]
   );
   const messageId = messageResult.rows[0]!.id;
   for (const recipient of resolved.recipients) {
@@ -74,19 +78,19 @@ export async function sendEmailMessage(
     );
   }
 
-  const transporter = createTransporter(config);
+  const transporter = createTransporter(smtp);
   let sentCount = 0;
   let failedCount = 0;
   try {
     for (const recipient of resolved.recipients) {
       try {
         await transporter.sendMail({
-          from: { name: config.smtp.fromName, address: config.smtp.fromEmail },
+          from: { name: smtp.fromName, address: smtp.fromEmail },
           to: recipient.email,
-          replyTo: config.smtp.replyTo ?? undefined,
+          replyTo: smtp.replyTo ?? undefined,
           subject: input.subject,
           text: input.body,
-          headers: { "X-CEY-Message-ID": messageId }
+          headers: { "X-GU-Message-ID": messageId }
         });
         sentCount += 1;
         await database.query(
@@ -116,7 +120,7 @@ export async function sendEmailMessage(
   return { messageId, status, recipientsCount: resolved.recipients.length, sentCount, failedCount };
 }
 
-export async function listEmailMessages(database: Database) {
+export async function listEmailMessages(database: ExtensionQueryable) {
   const result = await database.query<{
     id: string;
     subject: string;
@@ -139,14 +143,14 @@ export async function listEmailMessages(database: Database) {
   return result.rows;
 }
 
-function createTransporter(config: AppConfig) {
-  if (!config.smtp.configured) throw new Error("L'envoi SMTP n'est pas configuré dans le fichier .env.");
+function createTransporter(smtp: SmtpConfig) {
+  if (!smtp.configured) throw new Error("L'envoi SMTP n'est pas configuré dans le fichier .env.");
   return nodemailer.createTransport({
-    host: config.smtp.host,
-    port: config.smtp.port,
-    secure: config.smtp.secure,
-    requireTLS: !config.smtp.secure,
-    auth: { user: config.smtp.user, pass: config.smtp.password },
+    host: smtp.host,
+    port: smtp.port,
+    secure: smtp.secure,
+    requireTLS: !smtp.secure,
+    auth: { user: smtp.user, pass: smtp.password },
     tls: { minVersion: "TLSv1.2" },
     pool: true,
     maxConnections: 1,
@@ -157,10 +161,15 @@ function createTransporter(config: AppConfig) {
   });
 }
 
-async function resolveRecipients(database: Database, target: EmailTarget) {
+async function resolveRecipients(database: ExtensionQueryable, target: EmailTarget) {
   if (target.type === "single") {
     const email = emailSchema.parse(target.email.trim().toLocaleLowerCase("fr"));
-    return { targetLabel: `Test · ${email}`, membersCount: 1, withoutEmailCount: 0, recipients: [{ email, memberNames: ["Destinataire de test"] }] };
+    return {
+      targetLabel: `Test · ${email}`,
+      membersCount: 1,
+      withoutEmailCount: 0,
+      recipients: [{ email, memberNames: ["Destinataire de test"] }]
+    };
   }
   let targetLabel = "Tous les adhérents";
   if (target.type === "groups") {

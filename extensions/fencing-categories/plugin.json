@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "fencing-categories",
+  "name": "Catégories Escrime",
+  "description": "Catégories FFE calculées par saison et critères de groupes associés.",
+  "version": "1.0.0",
+  "core": { "minimum": "0.1.0" },
+  "dependencies": [],
+  "optionalDependencies": [],
+  "capabilities": ["navigation", "member-columns", "group-criteria", "dynamic-groups"],
+  "entitlementKey": "fencing-categories",
+  "defaultEnabled": true,
+  "entrypoints": {
+    "server": "server/index.mjs",
+    "web": "web/index.js",
+    "styles": "web/styles.css"
+  },
+  "migrations": ["001_category_lookup_index.sql"],
+  "routes": ["/api/categories"]
+}

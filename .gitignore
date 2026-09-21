@@ -3,7 +3,17 @@ dist/
 .env
 .env.production
 secrets/
+.dev-keys/
 *.log
 .DS_Store
 .vite/
 coverage/
+artifacts/
+.ai-handoff/
+# Paquets de modules produits par `npm run build:extensions` à partir de extensions/.
+# Les manifestes des modules pas encore extraits restent versionnés ici.
+apps/api/bundled-plugins/fencing-categories/
+apps/api/bundled-plugins/email-messaging/
+apps/api/bundled-plugins/attendance-sheets/
+apps/api/bundled-plugins/irl-documents/
+apps/api/bundled-plugins/ffe-health-documents/

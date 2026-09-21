@@ -2,26 +2,22 @@ import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
-import { ZipArchive } from "archiver";
-import { PassThrough } from "node:stream";
-import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db.js";
 import { createHelloAssoClient, HelloAssoError } from "./helloasso.js";
-import { getAttendanceSheet, getSchoolHolidays, saveAttendance } from "./attendance.js";
-import { categoryForBirthDate, getCategoryConfiguration, getCategoryDefinitions, getCategorySeason } from "./categories.js";
-import { getDynamicGroupCriteria, refreshDynamicGroups, validateDynamicCriterion } from "./dynamic-groups.js";
-import { emailConfiguration, listEmailMessages, previewRecipients, sendEmailMessage, verifyEmailConnection } from "./email.js";
+import { configureDynamicGroups, getDynamicGroupCriteria, refreshDynamicGroups, validateDynamicCriterion } from "./dynamic-groups.js";
 import { fencingCategoryError, normalizeBirthDate } from "./fencing-category.js";
 import { installSecurity, prepareAuthentication } from "./security.js";
+import { ExtensionRegistry, ExtensionRegistryError, publicExtensionAssetContentType } from "./extensions.js";
+import { ExtensionContracts } from "./extension-contracts.js";
+import { loadExtensions, packageFile } from "./extension-loader.js";
+import { registerExtensionInstaller } from "./extension-installer.js";
 import {
-  documentAsPdf,
   documentHash,
-  exportBaseName,
-  healthAnalysisVersion,
   maxDocumentBytes,
-  recognizeHealthDocument,
   validateDocument,
   type DocumentClassification,
   type DocumentContent
@@ -35,21 +31,10 @@ import {
   selectCampaigns,
   selectFields
 } from "./setup.js";
-import {
-  createCombinedPrintDocument,
-  createIndividualPrintDocument,
-  getPrintDocumentVariables,
-  memberPrintFileName,
-  resolvePrintDocumentMembers,
-  sanitizePrintDocumentHtml,
-  unknownPrintVariables,
-  type PrintDocumentTarget
-} from "./print-documents.js";
 
 const config = loadConfig();
 const database = createDatabase(config);
 const helloasso = createHelloAssoClient(config);
-const documentExportJobs = new Map<string, DocumentExportJob>();
 const server = Fastify({
   logger: true,
   trustProxy: config.trustProxy,
@@ -70,6 +55,19 @@ await server.register(rateLimit, {
 });
 await prepareAuthentication(database, config);
 await installSecurity(server, database, config);
+const extensions = await ExtensionRegistry.create(database, config);
+const contracts = new ExtensionContracts();
+configureDynamicGroups({ contracts, isExtensionEnabled: (id) => extensions.isEnabled(id) });
+await loadExtensions({ server, database, config, contracts, registry: extensions, helloasso });
+registerExtensionInstaller(server, database, config, extensions);
+
+server.addHook("preHandler", async (request, reply) => {
+  const path = request.url.split("?", 1)[0] ?? request.url;
+  const extensionId = extensions.extensionForPath(path);
+  if (extensionId && !extensions.isEnabled(extensionId)) {
+    return reply.code(404).send({ message: "Cette fonctionnalité est désactivée dans Extensions." });
+  }
+});
 
 const groupInputSchema = z.object({
   name: z.string().trim().min(2).max(80),
@@ -101,21 +99,6 @@ const groupDefinitionsSchema = z.object({
 });
 const memberIdSchema = z.object({ memberId: z.uuid() });
 const groupIdSchema = z.object({ groupId: z.uuid() });
-const categoryIdSchema = z.object({ categoryId: z.uuid() });
-const categoryInputSchema = z.object({
-  name: z.string().trim().min(1).max(50),
-  birthYearFrom: z.number().int().min(1900).max(2200),
-  birthYearTo: z.number().int().min(1900).max(2200)
-}).refine((category) => category.birthYearFrom <= category.birthYearTo, {
-  message: "L'année de début doit précéder l'année de fin."
-});
-const categorySettingsSchema = z.object({
-  rolloverDate: z.string().regex(/^\d{2}-\d{2}$/)
-}).refine(({ rolloverDate }) => {
-  const [month, day] = rolloverDate.split("-").map(Number);
-  const value = new Date(Date.UTC(2000, month! - 1, day));
-  return value.getUTCMonth() === month! - 1 && value.getUTCDate() === day;
-}, { message: "La date de changement de saison est invalide." });
 const memberGroupSelectionSchema = z.object({
   groupIds: z.array(z.uuid()).max(100)
 });
@@ -136,83 +119,61 @@ const memberOverrideFieldSchema = z.object({
   fieldKey: z.string().min(1).max(100)
 });
 const memberDocumentSchema = z.object({ memberId: z.uuid(), fieldKey: z.string().min(1).max(100) });
-const documentClassificationSchema = z.object({ classification: z.enum(["certificate", "attestation", "questionnaire", "unknown"]) });
-const documentExportSchema = z.object({
-  fieldKey: z.string().min(1).max(100),
-  scope: z.enum(["all", "groups"]),
-  groupIds: z.array(z.uuid()).max(100).default([]),
-  identitySource: z.enum(["member", "payer"]),
-  template: z.string().trim().min(1).max(200),
-  documentSelection: z.enum(["new", "all"]).default("new"),
-  reanalyze: z.boolean().default(false)
-}).refine((value) => value.scope === "all" || value.groupIds.length > 0, {
-  message: "Choisissez au moins un groupe."
-});
-const documentExportIdSchema = z.object({ exportId: z.uuid() });
-const scheduleSelectionSchema = z.object({
-  schedules: z.array(z.object({
-    weekday: z.number().int().min(1).max(7),
-    startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-    endTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/)
-  }).refine((schedule) => schedule.endTime > schedule.startTime, {
-    message: "L'heure de fin doit suivre l'heure de début."
-  })).max(20)
-});
-const attendanceQuerySchema = z.object({
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
-}).refine((period) => period.endDate >= period.startDate, {
-  message: "La période est invalide."
-}).refine((period) => {
-  const days = (Date.parse(period.endDate) - Date.parse(period.startDate)) / 86_400_000;
-  return days <= 730;
-}, { message: "La période ne peut pas dépasser deux ans." });
-const attendanceSaveSchema = z.object({
-  startDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  endDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  records: z.array(z.object({
-    memberId: z.uuid(),
-    date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-    startTime: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),
-    status: z.enum(["present", "absent", "excused"])
-  })).max(20_000)
-}).refine((input) => input.endDate >= input.startDate && input.records.every(
-  (record) => record.date >= input.startDate && record.date <= input.endDate
-), { message: "Les présences ne correspondent pas à la période." });
-const emailTargetSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("all") }),
-  z.object({ type: z.literal("groups"), groupIds: z.array(z.uuid()).min(1).max(100) }),
-  z.object({ type: z.literal("single"), email: z.email() })
-]);
-const emailMessageSchema = z.object({
-  subject: z.string().trim().min(1).max(200).refine((value) => !/[\r\n]/.test(value)),
-  body: z.string().trim().min(1).max(50_000),
-  target: emailTargetSchema
-});
-const printDocumentTargetSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("all") }),
-  z.object({ type: z.literal("healthMissing") }),
-  z.object({ type: z.literal("groups"), groupIds: z.array(z.uuid()).min(1).max(100) }),
-  z.object({ type: z.literal("categories"), categories: z.array(z.string().trim().min(1).max(50)).min(1).max(100) }),
-  z.object({ type: z.literal("members"), memberIds: z.array(z.uuid()).min(1).max(1500) })
-]);
-const printDocumentExportSchema = z.object({
-  title: z.string().trim().min(1).max(120),
-  contentHtml: z.string().trim().min(1).max(60_000),
-  output: z.enum(["individual", "combined"]),
-  target: printDocumentTargetSchema
-});
-const printDocumentTemplateSchema = z.object({
-  name: z.string().trim().min(1).max(100),
-  documentTitle: z.string().trim().min(1).max(120),
-  contentHtml: z.string().trim().min(1).max(60_000),
-  output: z.enum(["individual", "combined"])
-});
-const printDocumentTemplateIdSchema = z.object({ templateId: z.uuid() });
+const extensionIdSchema = z.object({ extensionId: z.string().regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/).max(80) });
+const extensionStateSchema = z.object({ enabled: z.boolean() });
 
 server.get("/api/health", async () => {
   await database.query("SELECT 1");
   return { status: "ok" };
+});
+
+server.get("/api/extensions", async () => ({
+  items: await extensions.list(),
+  configuration: extensions.configuration()
+}));
+
+server.put("/api/extensions/:extensionId", async (request) => {
+  const { extensionId } = extensionIdSchema.parse(request.params);
+  const { enabled } = extensionStateSchema.parse(request.body);
+  return extensions.setEnabled(extensionId, enabled);
+});
+
+// Sert le bundle navigateur d'un module depuis la même origine, pour que la CSP du SPA
+// (`script-src 'self'`) reste intacte. Le chemin demandé ne peut pas sortir du paquet.
+server.get("/api/extensions/:extensionId/assets/*", async (request, reply) => {
+  const { extensionId } = extensionIdSchema.parse(request.params);
+  if (!extensions.isEnabled(extensionId)) {
+    return reply.code(404).send({ message: "Cette fonctionnalité est désactivée dans Extensions." });
+  }
+  const directory = extensions.packageDirectory(extensionId);
+  if (!directory) return reply.code(404).send({ message: "Ce module n'est pas installé." });
+
+  const requested = (request.params as Record<string, string>)["*"] ?? "";
+  const contentType = publicExtensionAssetContentType(requested);
+  if (!contentType) {
+    return reply.code(404).send({ message: "Cette ressource du module n'est pas publique." });
+  }
+  let file: string;
+  try {
+    file = packageFile(directory, requested);
+  } catch {
+    return reply.code(400).send({ message: "Chemin de ressource invalide." });
+  }
+  let content: Buffer;
+  try {
+    content = await readFile(file);
+  } catch {
+    return reply.code(404).send({ message: "Ressource introuvable." });
+  }
+  // Empreinte du contenu plutôt que le numéro de version du manifeste : un module dont le
+  // code change sans que quelqu'un pense à incrémenter sa version ne doit jamais rester
+  // servi depuis le cache d'un navigateur qui l'a visité avant le changement.
+  const etag = `"${createHash("sha256").update(content).digest("hex")}"`;
+  reply.header("ETag", etag);
+  if (request.headers["if-none-match"] === etag) return reply.code(304).send();
+  reply.header("Content-Type", contentType);
+  reply.header("Content-Length", content.length);
+  return reply.send(content);
 });
 
 server.get("/api/dashboard", async () => {
@@ -228,160 +189,13 @@ server.get("/api/dashboard", async () => {
       configured: config.helloasso.configured,
       environment: config.helloasso.baseUrl.includes("sandbox") ? "sandbox" : "production",
       organizationSlug: config.helloasso.organizationSlug || null
-    },
-    smtp: emailConfiguration(config)
+    }
   };
 });
 
-server.get("/api/email/status", async () => emailConfiguration(config));
-
-server.post("/api/email/verify", { config: { rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async (_request, reply) => {
-  if (!config.smtp.configured) {
-    return reply.code(409).send({ message: "Renseignez d'abord les paramètres SMTP dans le fichier .env." });
-  }
-  try {
-    await verifyEmailConnection(config);
-    return { connected: true };
-  } catch (error) {
-    const detail = error instanceof Error ? error.message.replace(/[\r\n]+/g, " ").slice(0, 300) : "Erreur inconnue";
-    return reply.code(502).send({ message: `Connexion SMTP refusée : ${detail}` });
-  }
-});
-
-server.post("/api/email/recipients-preview", async (request) => {
-  const target = emailTargetSchema.parse(request.body);
-  return previewRecipients(database, target);
-});
-
-server.get("/api/email/messages", async () => ({
-  items: await listEmailMessages(database)
-}));
-
-server.post("/api/email/messages", { config: { rateLimit: { max: 10, timeWindow: "1 hour" } } }, async (request, reply) => {
-  if (!config.smtp.configured) {
-    return reply.code(409).send({ message: "L'envoi SMTP n'est pas configuré dans le fichier .env." });
-  }
-  const input = emailMessageSchema.parse(request.body);
-  try {
-    return await sendEmailMessage(database, config, input);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : "L'envoi du message a échoué.";
-    return reply.code(400).send({ message: detail });
-  }
-});
-
-server.get("/api/print-documents/config", async () => ({
-  variables: await getPrintDocumentVariables(database)
-}));
-
-server.get("/api/print-documents/templates", async () => {
-  const result = await database.query<{
-    id: string; name: string; documentTitle: string; contentHtml: string;
-    output: "individual" | "combined"; createdAt: Date; updatedAt: Date;
-  }>(`
-    SELECT id, name, document_title AS "documentTitle", content_html AS "contentHtml",
-           output_mode AS output, created_at AS "createdAt", updated_at AS "updatedAt"
-    FROM print_document_templates
-    ORDER BY lower(name), updated_at DESC
-  `);
-  return { items: result.rows };
-});
-
-server.post("/api/print-documents/templates", async (request, reply) => {
-  const input = printDocumentTemplateSchema.parse(request.body);
-  const contentHtml = sanitizePrintDocumentHtml(input.contentHtml);
-  if (!printDocumentHasText(contentHtml)) return reply.code(400).send({ message: "Le modèle ne peut pas être vide." });
-  try {
-    const result = await database.query<{
-      id: string; name: string; documentTitle: string; contentHtml: string;
-      output: "individual" | "combined"; createdAt: Date; updatedAt: Date;
-    }>(`
-      INSERT INTO print_document_templates (name, document_title, content_html, output_mode, created_by)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, name, document_title AS "documentTitle", content_html AS "contentHtml",
-                output_mode AS output, created_at AS "createdAt", updated_at AS "updatedAt"
-    `, [input.name, input.documentTitle, contentHtml, input.output, request.authUser?.id ?? null]);
-    return reply.code(201).send(result.rows[0]);
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "23505") {
-      return reply.code(409).send({ message: "Un modèle porte déjà ce nom." });
-    }
-    throw error;
-  }
-});
-
-server.put("/api/print-documents/templates/:templateId", async (request, reply) => {
-  const { templateId } = printDocumentTemplateIdSchema.parse(request.params);
-  const input = printDocumentTemplateSchema.parse(request.body);
-  const contentHtml = sanitizePrintDocumentHtml(input.contentHtml);
-  if (!printDocumentHasText(contentHtml)) return reply.code(400).send({ message: "Le modèle ne peut pas être vide." });
-  try {
-    const result = await database.query<{
-      id: string; name: string; documentTitle: string; contentHtml: string;
-      output: "individual" | "combined"; createdAt: Date; updatedAt: Date;
-    }>(`
-      UPDATE print_document_templates
-      SET name = $2, document_title = $3, content_html = $4, output_mode = $5, updated_at = now()
-      WHERE id = $1
-      RETURNING id, name, document_title AS "documentTitle", content_html AS "contentHtml",
-                output_mode AS output, created_at AS "createdAt", updated_at AS "updatedAt"
-    `, [templateId, input.name, input.documentTitle, contentHtml, input.output]);
-    if (!result.rows[0]) return reply.code(404).send({ message: "Ce modèle n'existe plus." });
-    return result.rows[0];
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error && error.code === "23505") {
-      return reply.code(409).send({ message: "Un modèle porte déjà ce nom." });
-    }
-    throw error;
-  }
-});
-
-server.delete("/api/print-documents/templates/:templateId", async (request, reply) => {
-  const { templateId } = printDocumentTemplateIdSchema.parse(request.params);
-  const result = await database.query("DELETE FROM print_document_templates WHERE id = $1", [templateId]);
-  if (!result.rowCount) return reply.code(404).send({ message: "Ce modèle n'existe plus." });
-  return { templateId, deleted: true };
-});
-
-server.post("/api/print-documents/export", {
-  config: { rateLimit: { max: 10, timeWindow: "1 hour" } }
-}, async (request, reply) => {
-  const input = printDocumentExportSchema.parse(request.body);
-  const contentHtml = sanitizePrintDocumentHtml(input.contentHtml);
-  if (!printDocumentHasText(contentHtml)) return reply.code(400).send({ message: "Le document ne peut pas être vide." });
-  const variables = await getPrintDocumentVariables(database);
-  const unknown = unknownPrintVariables(contentHtml, variables);
-  if (unknown.length > 0) {
-    return reply.code(400).send({ message: `Variable inconnue : ${unknown.slice(0, 3).join(", ")}.` });
-  }
-  const members = await resolvePrintDocumentMembers(database, input.target as PrintDocumentTarget);
-  if (members.length === 0) return reply.code(400).send({ message: "Aucun adhérent ne correspond à cette sélection." });
-  const archiveName = safeDownloadName(input.title);
-  if (input.output === "combined") {
-    const pdf = await createCombinedPrintDocument(contentHtml, members, input.title);
-    reply.header("Content-Type", "application/pdf");
-    reply.header("Content-Length", pdf.length);
-    reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${archiveName}.pdf`)}`);
-    return reply.send(pdf);
-  }
-  const names = new Map<string, number>();
-  const files: Array<{ name: string; content: Buffer }> = [];
-  for (const member of members) {
-    const original = memberPrintFileName(member).replace(/\.pdf$/i, "");
-    const count = (names.get(original) ?? 0) + 1;
-    names.set(original, count);
-    const name = `${original}${count > 1 ? `-${count}` : ""}.pdf`;
-    files.push({ name, content: await createIndividualPrintDocument(contentHtml, member, input.title) });
-  }
-  const archive = await zipBuffer(files);
-  reply.header("Content-Type", "application/zip");
-  reply.header("Content-Length", archive.length);
-  reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(`${archiveName}.zip`)}`);
-  return reply.send(archive);
-});
-
 server.get("/api/members", async () => {
-  const [result, fieldsResult, documentsResult, categoryDefinitions, categorySeason] = await Promise.all([database.query<{
+  const categoryContext = await contracts.loadMemberCategoryContext(database, (id) => extensions.isEnabled(id));
+  const [result, fieldsResult, documentsResult] = await Promise.all([database.query<{
     id: string;
     firstName: string;
     lastName: string;
@@ -446,10 +260,9 @@ server.get("/api/members", async () => {
            helloasso_size_bytes AS "helloassoSizeBytes", local_size_bytes AS "localSizeBytes",
            classification, classification_source AS "classificationSource", analyzed_at AS "analyzedAt"
     FROM member_documents
-  `), getCategoryDefinitions(database), getCategorySeason(database)]);
+  `)]);
   const documents = new Map(documentsResult.rows.map((document) => [`${document.memberId}\0${document.fieldKey}`, document]));
   return {
-    season: categorySeason.label,
     items: result.rows.map((member) => {
       const birthDate = normalizeBirthDate(member.birthDate);
       const profileOverrides = isRecord(member.localOverrides.profileData)
@@ -458,8 +271,7 @@ server.get("/api/members", async () => {
       return {
         ...member,
         birthDate,
-        fencingCategory: categoryForBirthDate(birthDate, categoryDefinitions),
-        categoryError: fencingCategoryError(birthDate),
+        ...(categoryContext?.compute(birthDate) ?? { fencingCategory: null, categoryError: null }),
         overriddenFields: ["firstName", "lastName", "email", "phone", "birthDate"].filter(
           (key) => Object.hasOwn(member.localOverrides, key)
         ),
@@ -498,191 +310,44 @@ server.get("/api/members", async () => {
 
 server.get("/api/groups", async () => {
   await refreshDynamicGroups(database);
-  const result = await database.query<{
-    id: string;
-    name: string;
-    description: string | null;
-    source: "manual" | "helloasso" | "dynamic";
-    membersCount: number;
-    createdAt: Date;
-    dynamicRule: { fieldKey: string; values: string[] } | null;
-    trainingSchedules: Array<{ weekday: number; startTime: string; endTime: string }>;
-  }>(`
-    SELECT
-      g.id,
-      g.name,
-      g.description,
-      g.source,
-      g.created_at AS "createdAt",
-      CASE WHEN g.source = 'dynamic' THEN (
-        SELECT jsonb_build_object(
-          'fieldKey', min(rule.field_key),
-          'values', jsonb_agg(rule.match_value ORDER BY rule.match_value)
-        )
-        FROM group_dynamic_rules rule WHERE rule.group_id = g.id
-      ) ELSE NULL END AS "dynamicRule",
-      (SELECT count(*)::int FROM member_groups mg WHERE mg.group_id = g.id) AS "membersCount",
-      COALESCE((
-        SELECT jsonb_agg(jsonb_build_object(
-          'weekday', s.weekday,
-          'startTime', to_char(s.start_time, 'HH24:MI'),
-          'endTime', to_char(s.end_time, 'HH24:MI')
-        ) ORDER BY s.weekday, s.start_time)
-        FROM group_training_schedules s WHERE s.group_id = g.id
-      ), '[]'::jsonb) AS "trainingSchedules"
-    FROM groups g
-    ORDER BY g.name
-  `);
-  return { items: result.rows };
+  const [result, schedulesByGroup] = await Promise.all([
+    database.query<{
+      id: string;
+      name: string;
+      description: string | null;
+      source: "manual" | "helloasso" | "dynamic";
+      membersCount: number;
+      createdAt: Date;
+      dynamicRule: { fieldKey: string; values: string[] } | null;
+    }>(`
+      SELECT
+        g.id,
+        g.name,
+        g.description,
+        g.source,
+        g.created_at AS "createdAt",
+        CASE WHEN g.source = 'dynamic' THEN (
+          SELECT jsonb_build_object(
+            'fieldKey', min(rule.field_key),
+            'values', jsonb_agg(rule.match_value ORDER BY rule.match_value)
+          )
+          FROM group_dynamic_rules rule WHERE rule.group_id = g.id
+        ) ELSE NULL END AS "dynamicRule",
+        (SELECT count(*)::int FROM member_groups mg WHERE mg.group_id = g.id) AS "membersCount"
+      FROM groups g
+      ORDER BY g.name
+    `),
+    contracts.loadGroupSchedules(database, (id) => extensions.isEnabled(id))
+  ]);
+  return {
+    items: result.rows.map((group) => ({
+      ...group,
+      trainingSchedules: schedulesByGroup.get(group.id) ?? []
+    }))
+  };
 });
 
-server.get("/api/group-criteria", async () => ({
-  items: await getDynamicGroupCriteria(database)
-}));
-
-server.get("/api/categories", async () => getCategoryConfiguration(database));
-
-server.put("/api/categories/settings", async (request) => {
-  const input = categorySettingsSchema.parse(request.body);
-  const [month, day] = input.rolloverDate.split("-").map(Number);
-  const client = await database.connect();
-  try {
-    await client.query("BEGIN");
-    await client.query(
-      `UPDATE fencing_category_settings
-       SET rollover_month = $1, rollover_day = $2, updated_at = now()
-       WHERE singleton = true`,
-      [month, day]
-    );
-    await refreshDynamicGroups(client);
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-  return getCategoryConfiguration(database);
-});
-
-server.post("/api/categories", async (request, reply) => {
-  const input = categoryInputSchema.parse(request.body);
-  const season = await getCategorySeason(database);
-  await getCategoryDefinitions(database);
-  const client = await database.connect();
-  try {
-    await client.query("BEGIN");
-    const conflict = await client.query(
-      `SELECT 1 FROM fencing_categories
-       WHERE season_start_year = $1
-         AND (lower(name) = lower($2) OR int4range(birth_year_from, birth_year_to, '[]') && int4range($3, $4, '[]'))`,
-      [season.startYear, input.name, input.birthYearFrom, input.birthYearTo]
-    );
-    if (conflict.rowCount) {
-      await client.query("ROLLBACK");
-      return reply.code(409).send({ message: "Ce nom ou ces années de naissance sont déjà utilisés." });
-    }
-    const result = await client.query<{ id: string }>(
-      `INSERT INTO fencing_categories
-         (season_start_year, name, birth_year_from, birth_year_to, sort_order)
-       VALUES ($1, $2, $3, $4, COALESCE((
-         SELECT max(sort_order) + 1 FROM fencing_categories WHERE season_start_year = $1
-       ), 0)) RETURNING id`,
-      [season.startYear, input.name, input.birthYearFrom, input.birthYearTo]
-    );
-    await refreshDynamicGroups(client);
-    await client.query("COMMIT");
-    return reply.code(201).send({ id: result.rows[0]!.id });
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-});
-
-server.put("/api/categories/:categoryId", async (request, reply) => {
-  const { categoryId } = categoryIdSchema.parse(request.params);
-  const input = categoryInputSchema.parse(request.body);
-  const season = await getCategorySeason(database);
-  await getCategoryDefinitions(database);
-  const client = await database.connect();
-  try {
-    await client.query("BEGIN");
-    const currentResult = await client.query<{ name: string }>(
-      "SELECT name FROM fencing_categories WHERE id = $1 AND season_start_year = $2 FOR UPDATE",
-      [categoryId, season.startYear]
-    );
-    const current = currentResult.rows[0];
-    if (!current) {
-      await client.query("ROLLBACK");
-      return reply.code(404).send({ message: "Cette catégorie n'existe pas pour la saison actuelle." });
-    }
-    const conflict = await client.query(
-      `SELECT 1 FROM fencing_categories
-       WHERE season_start_year = $1 AND id <> $2
-         AND (lower(name) = lower($3) OR int4range(birth_year_from, birth_year_to, '[]') && int4range($4, $5, '[]'))`,
-      [season.startYear, categoryId, input.name, input.birthYearFrom, input.birthYearTo]
-    );
-    if (conflict.rowCount) {
-      await client.query("ROLLBACK");
-      return reply.code(409).send({ message: "Ce nom ou ces années de naissance sont déjà utilisés." });
-    }
-    await client.query(
-      `UPDATE fencing_categories SET
-         name = $3, birth_year_from = $4, birth_year_to = $5, updated_at = now()
-       WHERE id = $1 AND season_start_year = $2`,
-      [categoryId, season.startYear, input.name, input.birthYearFrom, input.birthYearTo]
-    );
-    if (current.name !== input.name) {
-      await client.query(
-        `UPDATE group_dynamic_rules SET match_value = $2
-         WHERE field_key = 'category' AND match_value = $1`,
-        [current.name, input.name]
-      );
-    }
-    await refreshDynamicGroups(client);
-    await client.query("COMMIT");
-    return { id: categoryId, updated: true };
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-});
-
-server.delete("/api/categories/:categoryId", async (request, reply) => {
-  const { categoryId } = categoryIdSchema.parse(request.params);
-  const season = await getCategorySeason(database);
-  await getCategoryDefinitions(database);
-  const client = await database.connect();
-  try {
-    await client.query("BEGIN");
-    const currentResult = await client.query<{ name: string }>(
-      "SELECT name FROM fencing_categories WHERE id = $1 AND season_start_year = $2 FOR UPDATE",
-      [categoryId, season.startYear]
-    );
-    const current = currentResult.rows[0];
-    if (!current) {
-      await client.query("ROLLBACK");
-      return reply.code(404).send({ message: "Cette catégorie n'existe pas pour la saison actuelle." });
-    }
-    await client.query(
-      "DELETE FROM group_dynamic_rules WHERE field_key = 'category' AND match_value = $1",
-      [current.name]
-    );
-    await client.query("DELETE FROM fencing_categories WHERE id = $1", [categoryId]);
-    await refreshDynamicGroups(client);
-    await client.query("COMMIT");
-    return { id: categoryId, deleted: true };
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-});
+server.get("/api/group-criteria", async () => ({ items: await getDynamicGroupCriteria(database) }));
 
 server.post("/api/groups", async (request, reply) => {
   const input = groupInputSchema.parse(request.body);
@@ -752,60 +417,6 @@ server.delete("/api/groups/:groupId", async (request, reply) => {
   }
   await database.query("DELETE FROM groups WHERE id = $1", [groupId]);
   return { groupId, deleted: true };
-});
-
-server.put("/api/groups/:groupId/schedules", async (request, reply) => {
-  const { groupId } = groupIdSchema.parse(request.params);
-  const input = scheduleSelectionSchema.parse(request.body);
-  const schedules = [...new Map(input.schedules.map((schedule) => [
-    `${schedule.weekday}:${schedule.startTime}:${schedule.endTime}`,
-    schedule
-  ])).values()];
-  const client = await database.connect();
-  try {
-    await client.query("BEGIN");
-    const groupResult = await client.query("SELECT 1 FROM groups WHERE id = $1", [groupId]);
-    if (groupResult.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return reply.code(404).send({ message: "Ce groupe n'existe pas." });
-    }
-    await client.query("DELETE FROM group_training_schedules WHERE group_id = $1", [groupId]);
-    for (const schedule of schedules) {
-      await client.query(
-        `INSERT INTO group_training_schedules (group_id, weekday, start_time, end_time)
-         VALUES ($1, $2, $3, $4)`,
-        [groupId, schedule.weekday, schedule.startTime, schedule.endTime]
-      );
-    }
-    await client.query("COMMIT");
-    return { groupId, schedules };
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-});
-
-server.get("/api/school-holidays", async (request) => {
-  const period = attendanceQuerySchema.parse(request.query);
-  return { zone: "C", academy: "Versailles", items: await getSchoolHolidays(period.startDate, period.endDate) };
-});
-
-server.get("/api/groups/:groupId/attendance-sheet", async (request, reply) => {
-  const { groupId } = groupIdSchema.parse(request.params);
-  const period = attendanceQuerySchema.parse(request.query);
-  const sheet = await getAttendanceSheet(database, groupId, period.startDate, period.endDate);
-  if (!sheet) return reply.code(404).send({ message: "Ce groupe n'existe pas." });
-  return sheet;
-});
-
-server.put("/api/groups/:groupId/attendance", async (request, reply) => {
-  const { groupId } = groupIdSchema.parse(request.params);
-  const input = attendanceSaveSchema.parse(request.body);
-  const saved = await saveAttendance(database, groupId, input.startDate, input.endDate, input.records);
-  if (!saved) return reply.code(404).send({ message: "Ce groupe n'existe pas." });
-  return { savedCount: input.records.length };
 });
 
 server.put("/api/members/:memberId/groups", async (request, reply) => {
@@ -999,32 +610,6 @@ server.delete("/api/members/:memberId/overrides/:fieldKey", async (request, repl
   }
 });
 
-server.get("/api/documents/config", async () => {
-  const [fields, settings] = await Promise.all([
-    database.query<{ key: string; label: string; health: boolean; availableCount: number; newCount: number }>(`
-      SELECT f.field_key AS key, f.label, f.document_role = 'health' AS health,
-             count(d.member_id) FILTER (WHERE d.local_content IS NOT NULL OR d.helloasso_url IS NOT NULL)::int AS "availableCount",
-             count(d.member_id) FILTER (
-               WHERE (d.local_content IS NOT NULL OR d.helloasso_url IS NOT NULL)
-                 AND (d.content_hash IS NULL OR d.last_exported_hash IS DISTINCT FROM d.content_hash)
-             )::int AS "newCount"
-      FROM helloasso_fields f
-      LEFT JOIN member_documents d ON d.field_key = f.field_key
-      WHERE f.selected = true AND f.field_type = 'File'
-      GROUP BY f.field_key ORDER BY f.label
-    `),
-    database.query<{ value: { identitySource?: "member" | "payer"; template?: string; documentSelection?: "new" | "all" } }>(
-      "SELECT value FROM app_settings WHERE key = 'document_export'"
-    )
-  ]);
-  return {
-    fields: fields.rows,
-    identitySource: settings.rows[0]?.value.identitySource ?? "member",
-    template: settings.rows[0]?.value.template ?? "{nom}-{prenom} - {type_document}",
-    documentSelection: settings.rows[0]?.value.documentSelection ?? "all"
-  };
-});
-
 server.get("/api/members/:memberId/documents/:fieldKey", async (request, reply) => {
   const input = memberDocumentSchema.parse(request.params);
   const query = z.object({ download: z.enum(["0", "1"]).optional() }).parse(request.query);
@@ -1056,8 +641,8 @@ server.post("/api/members/:memberId/documents/:fieldKey", {
   const document = validateDocument(content, part.mimetype, part.filename);
   const hash = documentHash(document);
   const recognition = field.rows[0].health
-    ? await recognizeHealthDocument(document, hash)
-    : { classification: "unknown" as const, hash };
+    ? await contracts.analyzeHealthDocument(document, hash, (id) => extensions.isEnabled(id))
+    : null;
   await database.query(`
     INSERT INTO member_documents
       (member_id, field_key, local_content, local_name, local_media_type, local_size_bytes,
@@ -1071,10 +656,10 @@ server.post("/api/members/:memberId/documents/:fieldKey", {
       analyzed_hash = EXCLUDED.analyzed_hash, analyzed_at = now(), local_uploaded_at = now(),
       content_hash = EXCLUDED.content_hash, analysis_version = EXCLUDED.analysis_version, updated_at = now()
   `, [input.memberId, input.fieldKey, document.content, document.fileName, document.mediaType,
-    document.content.length, recognition.classification, recognition.hash, hash,
-    field.rows[0].health ? healthAnalysisVersion : 0]);
+    document.content.length, recognition?.classification ?? "unknown", recognition?.hash ?? hash, hash,
+    recognition?.analysisVersion ?? 0]);
   await logDocumentAccess(request.authUser?.id ?? null, input.memberId, input.fieldKey, "upload");
-  return { uploaded: true, classification: recognition.classification };
+  return { uploaded: true, classification: recognition?.classification ?? "unknown" };
 });
 
 server.delete("/api/members/:memberId/documents/:fieldKey/local", async (request, reply) => {
@@ -1089,59 +674,6 @@ server.delete("/api/members/:memberId/documents/:fieldKey/local", async (request
   if (!result.rowCount) return reply.code(404).send({ message: "Aucun fichier local à supprimer." });
   await logDocumentAccess(request.authUser?.id ?? null, input.memberId, input.fieldKey, "revert");
   return { revertedToHelloAsso: true };
-});
-
-server.put("/api/members/:memberId/documents/:fieldKey/classification", async (request, reply) => {
-  const input = memberDocumentSchema.parse(request.params);
-  const { classification } = documentClassificationSchema.parse(request.body);
-  const result = await database.query(`
-    UPDATE member_documents SET classification = $3, classification_source = 'manual', updated_at = now()
-    WHERE member_id = $1 AND field_key = $2 AND (local_content IS NOT NULL OR helloasso_url IS NOT NULL)
-  `, [input.memberId, input.fieldKey, classification]);
-  if (!result.rowCount) return reply.code(404).send({ message: "Ce document n'existe pas." });
-  await logDocumentAccess(request.authUser?.id ?? null, input.memberId, input.fieldKey, "classify");
-  return { classification, classificationSource: "manual" };
-});
-
-server.post("/api/documents/exports", {
-  config: { rateLimit: { max: 5, timeWindow: "1 hour" } }
-}, async (request, reply) => {
-  const input = documentExportSchema.parse(request.body);
-  const owner = request.authUser?.id ?? request.authUser?.email ?? "local";
-  pruneDocumentExportJobs();
-  if ([...documentExportJobs.values()].some((job) => job.owner === owner && job.status === "running")) {
-    return reply.code(409).send({ message: "Un export de documents est déjà en cours pour votre compte." });
-  }
-  const job: DocumentExportJob = {
-    id: randomUUID(), owner, status: "running", total: 0, processed: 0,
-    certificateCount: 0, attestationCount: 0, questionnaireCount: 0, unknownCount: 0,
-    archive: null, fileName: null, error: null, expiresAt: Date.now() + 30 * 60_000
-  };
-  documentExportJobs.set(job.id, job);
-  void buildDocumentExport(input, job, request.authUser?.id ?? null).catch((error: unknown) => {
-    job.status = "failed";
-    job.error = error instanceof Error ? error.message : "La préparation de l'archive a échoué.";
-  });
-  return reply.code(202).send({ exportId: job.id });
-});
-
-server.get("/api/documents/exports/:exportId", async (request, reply) => {
-  const { exportId } = documentExportIdSchema.parse(request.params);
-  const job = ownedDocumentExportJob(exportId, request.authUser?.id ?? request.authUser?.email ?? "local");
-  if (!job) return reply.code(404).send({ message: "Cet export n'existe plus." });
-  return documentExportStatus(job);
-});
-
-server.get("/api/documents/exports/:exportId/download", async (request, reply) => {
-  const { exportId } = documentExportIdSchema.parse(request.params);
-  const job = ownedDocumentExportJob(exportId, request.authUser?.id ?? request.authUser?.email ?? "local");
-  if (!job) return reply.code(404).send({ message: "Cet export n'existe plus." });
-  if (job.status !== "ready" || !job.archive || !job.fileName) {
-    return reply.code(409).send({ message: "L'archive n'est pas encore prête." });
-  }
-  reply.header("Content-Type", "application/zip");
-  reply.header("Content-Disposition", `attachment; filename="${job.fileName}"`);
-  return reply.send(job.archive);
 });
 
 server.post("/api/helloasso/check", async (_request, reply) => {
@@ -1195,6 +727,9 @@ server.setErrorHandler((error, _request, reply) => {
   if (error instanceof HelloAssoError) {
     return reply.code(error.statusCode).send({ message: error.message });
   }
+  if (error instanceof ExtensionRegistryError) {
+    return reply.code(error.statusCode).send({ message: error.message });
+  }
   if (error && typeof error === "object" && "statusCode" in error && error.statusCode === 429) {
     return reply.code(429).send({ message: "Trop de requêtes. Réessayez dans quelques instants." });
   }
@@ -1246,140 +781,8 @@ type DocumentRecord = {
   classificationSource: "automatic" | "manual";
   analyzedHash: string | null;
   contentHash: string | null;
-  lastExportedHash: string | null;
   analysisVersion: number;
 };
-
-type ExportMember = {
-  id: string;
-  memberFirstName: string;
-  memberLastName: string;
-  payerFirstName: string | null;
-  payerLastName: string | null;
-};
-
-type DocumentExportJob = {
-  id: string;
-  owner: string;
-  status: "running" | "ready" | "failed";
-  total: number;
-  processed: number;
-  certificateCount: number;
-  attestationCount: number;
-  questionnaireCount: number;
-  unknownCount: number;
-  archive: Buffer | null;
-  fileName: string | null;
-  error: string | null;
-  expiresAt: number;
-};
-
-async function buildDocumentExport(
-  input: z.infer<typeof documentExportSchema>,
-  job: DocumentExportJob,
-  userId: string | null
-) {
-  const field = await database.query<{ health: boolean }>(`
-    SELECT document_role = 'health' AS health FROM helloasso_fields
-    WHERE field_key = $1 AND selected = true AND field_type = 'File'
-  `, [input.fieldKey]);
-  if (!field.rows[0]) throw new Error("Ce champ document n'est pas disponible.");
-  const members = await database.query<ExportMember>(`
-    SELECT m.id, m.first_name AS "memberFirstName", m.last_name AS "memberLastName",
-           m.source_data->>'payerFirstName' AS "payerFirstName",
-           m.source_data->>'payerLastName' AS "payerLastName"
-    FROM members m
-    WHERE m.status = 'active'
-      AND ($1::text = 'all' OR EXISTS (
-        SELECT 1 FROM member_groups mg WHERE mg.member_id = m.id AND mg.group_id = ANY($2::uuid[])
-      ))
-    ORDER BY m.last_name, m.first_name
-    LIMIT 1500
-  `, [input.scope, input.groupIds]);
-  await database.query(`
-    INSERT INTO app_settings (key, value) VALUES ('document_export', $1)
-    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()
-  `, [{ identitySource: input.identitySource, template: input.template, documentSelection: input.documentSelection }]);
-
-  const records = await Promise.all(members.rows.map(async (member) => ({
-    member,
-    record: await getDocumentRecord(member.id, input.fieldKey)
-  })));
-  const available = records.filter((entry): entry is { member: ExportMember; record: DocumentRecord } => Boolean(entry.record));
-  const candidates = input.reanalyze || input.documentSelection === "all"
-    ? available
-    : available.filter(({ record }) => !record.contentHash || record.lastExportedHash !== record.contentHash);
-  job.total = candidates.length;
-  const files: Array<{ name: string; content: Buffer }> = [];
-  const report: string[][] = [["Adhérent", "Fichier", "Classement", "Résultat"]];
-  for (const { member, record } of records) {
-    if (!record) report.push([`${member.memberLastName} ${member.memberFirstName}`, "", "", "Aucun fichier"]);
-  }
-  if (!input.reanalyze && input.documentSelection === "new") {
-    for (const { member } of available.filter((entry) => !candidates.includes(entry))) {
-      report.push([`${member.memberLastName} ${member.memberFirstName}`, "", "", "Déjà exporté — non inclus"]);
-    }
-  }
-  const names = new Map<string, number>();
-  let aggregateBytes = 0;
-  for (const { member, record } of candidates) {
-    try {
-      const document = await resolveDocument(record);
-      const hash = documentHash(document);
-      const classification = field.rows[0].health
-        ? await analyzeAndSave(record, document, input.reanalyze)
-        : record.classification;
-      const pdf = await documentAsPdf(document);
-      aggregateBytes += pdf.length;
-      if (aggregateBytes > 300 * 1024 * 1024) throw new Error("L'archive dépasse la limite de 300 Mo.");
-      const base = exportBaseName(input.template, { ...member, identitySource: input.identitySource, classification });
-      const count = (names.get(base) ?? 0) + 1;
-      names.set(base, count);
-      const name = `${base}${count > 1 ? ` (${count})` : ""}.pdf`;
-      files.push({ name, content: pdf });
-      await database.query(`
-        UPDATE member_documents SET content_hash = $3, last_exported_hash = $3,
-          last_exported_at = now(), updated_at = now()
-        WHERE member_id = $1 AND field_key = $2
-      `, [record.memberId, record.fieldKey, hash]);
-      report.push([`${member.memberLastName} ${member.memberFirstName}`, name, classificationLabel(classification), "Inclus"]);
-      if (classification === "certificate") job.certificateCount += 1;
-      else if (classification === "attestation") job.attestationCount += 1;
-      else if (classification === "questionnaire") job.questionnaireCount += 1;
-      else job.unknownCount += 1;
-    } catch (error) {
-      job.unknownCount += 1;
-      report.push([`${member.memberLastName} ${member.memberFirstName}`, "", "", error instanceof Error ? error.message : "Fichier inaccessible"]);
-    } finally {
-      job.processed += 1;
-    }
-  }
-  files.push({ name: "rapport.csv", content: Buffer.from(`\uFEFF${report.map(csvRow).join("\r\n")}`, "utf8") });
-  job.archive = await zipBuffer(files);
-  job.fileName = `documents-${new Date().toISOString().slice(0, 10)}.zip`;
-  job.status = "ready";
-  job.expiresAt = Date.now() + 30 * 60_000;
-  await logDocumentAccess(userId, null, input.fieldKey, "export");
-}
-
-function ownedDocumentExportJob(id: string, owner: string) {
-  const job = documentExportJobs.get(id);
-  return job?.owner === owner && job.expiresAt > Date.now() ? job : null;
-}
-
-function documentExportStatus(job: DocumentExportJob) {
-  return {
-    exportId: job.id, status: job.status, total: job.total, processed: job.processed,
-    certificateCount: job.certificateCount, attestationCount: job.attestationCount,
-    questionnaireCount: job.questionnaireCount, unknownCount: job.unknownCount,
-    error: job.error
-  };
-}
-
-function pruneDocumentExportJobs() {
-  const now = Date.now();
-  for (const [id, job] of documentExportJobs) if (job.expiresAt <= now) documentExportJobs.delete(id);
-}
 
 async function getDocumentRecord(memberId: string, fieldKey: string) {
   const result = await database.query<DocumentRecord>(`
@@ -1389,7 +792,7 @@ async function getDocumentRecord(memberId: string, fieldKey: string) {
            d.local_content AS "localContent", d.local_name AS "localName",
            d.local_media_type AS "localMediaType", d.classification,
            d.classification_source AS "classificationSource", d.analyzed_hash AS "analyzedHash",
-           d.content_hash AS "contentHash", d.last_exported_hash AS "lastExportedHash",
+           d.content_hash AS "contentHash",
            d.analysis_version AS "analysisVersion"
     FROM member_documents d
     JOIN helloasso_fields f ON f.field_key = d.field_key AND f.selected = true AND f.field_type = 'File'
@@ -1415,7 +818,7 @@ async function resolveDocument(record: DocumentRecord): Promise<DocumentContent>
   return { ...checked, source: "helloasso" };
 }
 
-async function analyzeAndSave(record: DocumentRecord, document: DocumentContent, force = false) {
+async function analyzeAndSave(record: DocumentRecord, document: DocumentContent) {
   const hash = documentHash(document);
   if (!record.health || record.classificationSource === "manual") {
     if (record.contentHash !== hash) {
@@ -1426,15 +829,17 @@ async function analyzeAndSave(record: DocumentRecord, document: DocumentContent,
     }
     return record.classification;
   }
-  if (!force && record.analyzedHash === hash) {
+  const analysisVersion = contracts.healthDocumentAnalysisVersion((id) => extensions.isEnabled(id));
+  if (!analysisVersion || record.analyzedHash === hash && record.analysisVersion === analysisVersion) {
     return record.classification;
   }
-  const recognition = await recognizeHealthDocument(document, hash);
+  const recognition = await contracts.analyzeHealthDocument(document, hash, (id) => extensions.isEnabled(id));
+  if (!recognition) return record.classification;
   await database.query(`
     UPDATE member_documents SET classification = $3, classification_source = 'automatic',
       analyzed_hash = $4, content_hash = $4, analysis_version = $5, analyzed_at = now(), updated_at = now()
     WHERE member_id = $1 AND field_key = $2
-  `, [record.memberId, record.fieldKey, recognition.classification, recognition.hash, healthAnalysisVersion]);
+  `, [record.memberId, record.fieldKey, recognition.classification, recognition.hash, recognition.analysisVersion]);
   return recognition.classification;
 }
 
@@ -1442,49 +847,12 @@ async function logDocumentAccess(
   userId: string | null,
   memberId: string | null,
   fieldKey: string,
-  action: "view" | "download" | "upload" | "revert" | "classify" | "export"
+  action: "view" | "download" | "upload" | "revert"
 ) {
   await database.query(
     "INSERT INTO document_access_log (member_id, field_key, user_id, action) VALUES ($1, $2, $3, $4)",
     [memberId, fieldKey, userId, action]
   );
-}
-
-function classificationLabel(value: DocumentClassification) {
-  if (value === "certificate") return "Certificat";
-  if (value === "attestation") return "Attestation";
-  if (value === "questionnaire") return "Questionnaire fourni à la place de l'attestation";
-  return "À classer";
-}
-
-function csvRow(values: string[]) {
-  return values.map((value) => `"${value.replaceAll('"', '""')}"`).join(";");
-}
-
-function safeDownloadName(value: string) {
-  return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/[^a-z0-9_-]+/gi, "-").replace(/-+/g, "-").replace(/^-|-$/g, "")
-    .slice(0, 100) || "documents-irl";
-}
-
-function printDocumentHasText(html: string) {
-  return html.replace(/<[^>]+>/g, "").replace(/&nbsp;|&#160;/gi, " ").trim().length > 0;
-}
-
-async function zipBuffer(files: Array<{ name: string; content: Buffer }>) {
-  const output = new PassThrough();
-  const chunks: Buffer[] = [];
-  output.on("data", (chunk: Buffer) => chunks.push(chunk));
-  const completed = new Promise<Buffer>((resolve, reject) => {
-    output.once("end", () => resolve(Buffer.concat(chunks)));
-    output.once("error", reject);
-  });
-  const archive = new ZipArchive({ zlib: { level: 6 } });
-  archive.once("error", (error: Error) => output.destroy(error));
-  archive.pipe(output);
-  for (const file of files) archive.append(file.content, { name: file.name });
-  await archive.finalize();
-  return completed;
 }
 
 async function shutdown(signal: string) {

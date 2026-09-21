@@ -49,11 +49,25 @@ services:
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
       SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Cercle d'Escrime de Yerres}
       SMTP_REPLY_TO: ${SMTP_REPLY_TO:-}
+      EXTENSIONS_BUNDLED_DIRECTORY: /app/bundled-plugins
+      EXTENSIONS_DIRECTORY: /app/plugins
+      EXTENSION_CATALOG_URL: ${EXTENSION_CATALOG_URL:-}
+      EXTENSION_LICENSE_TOKEN: ${EXTENSION_LICENSE_TOKEN:-}
+      EXTENSION_LICENSE_PUBLIC_KEY: ${EXTENSION_LICENSE_PUBLIC_KEY:-}
+      EXTENSION_LICENSE_PUBLIC_KEY_FILE: ${EXTENSION_LICENSE_PUBLIC_KEY_FILE:-}
+      EXTENSION_OFFLINE_GRACE_DAYS: ${EXTENSION_OFFLINE_GRACE_DAYS:-30}
+      EXTENSION_ALLOW_UNSIGNED: ${EXTENSION_ALLOW_UNSIGNED:-false}
     depends_on:
       database:
         condition: service_healthy
     ports:
       - "127.0.0.1:${API_HOST_PORT:-18474}:3000"
+    volumes:
+      - plugin_data:/app/plugins
+      # Vide par défaut (Docker crée le dossier hôte s'il n'existe pas encore) : n'a d'effet
+      # que si EXTENSION_LICENSE_PUBLIC_KEY_FILE pointe vers un fichier posé dedans, par ex.
+      # ./secrets/catalog-public.pem -> /app/secrets/catalog-public.pem.
+      - ./secrets:/app/secrets:ro
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 5s
@@ -84,6 +98,7 @@ services:
 
 volumes:
   postgres_data:
+  plugin_data:
 
 networks:
   frontend:

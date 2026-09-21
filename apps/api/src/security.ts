@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { AppConfig } from "./config.js";
 import type { Database } from "./db.js";
 
-const sessionCookieFallback = "cey_session";
+const sessionCookieFallback = "gu_session";
 const loginSchema = z.object({
   email: z.email().max(254).transform((value) => value.trim().toLocaleLowerCase("fr")),
   password: z.string().min(1).max(256)
@@ -53,15 +53,25 @@ export async function prepareAuthentication(database: Database, config: AppConfi
   );
 }
 
+const extensionAssetPattern = /^\/api\/extensions\/[a-z0-9-]+\/assets\//;
+
 export async function installSecurity(server: FastifyInstance, database: Database, config: AppConfig) {
   server.decorateRequest("authUser", null);
   server.decorateRequest("authSessionId", null);
   server.decorateRequest("csrfToken", null);
-  const cookieName = config.auth.secureCookie ? "__Host-cey_session" : sessionCookieFallback;
+  const cookieName = config.auth.secureCookie ? "__Host-gu_session" : sessionCookieFallback;
   const dummyHash = config.auth.enabled ? await hashPassword(randomBytes(24).toString("base64url")) : "";
 
-  server.addHook("onSend", async (_request, reply) => {
-    reply.header("Cache-Control", "no-store");
+  server.addHook("onSend", async (request, reply) => {
+    // Les bundles de modules sont revalidés à chaque chargement (empreinte du contenu en
+    // ETag, posée par la route elle-même) plutôt que mis en cache sans condition : un module
+    // dont le code change sans que la version du manifeste soit incrémentée ne doit jamais
+    // rester servi depuis le cache d'un navigateur qui l'avait déjà visité.
+    const path = request.url.split("?", 1)[0] ?? request.url;
+    reply.header(
+      "Cache-Control",
+      extensionAssetPattern.test(path) ? "no-cache" : "no-store"
+    );
     reply.header("Content-Security-Policy", "default-src 'none'; frame-ancestors 'none'");
     reply.header("Referrer-Policy", "no-referrer");
     reply.header("X-Content-Type-Options", "nosniff");

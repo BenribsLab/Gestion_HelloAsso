@@ -1,7 +1,11 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
-import { categoryForBirthDate, getCategoryDefinitions } from "./categories.js";
-import type { Database } from "./db.js";
-import { normalizeBirthDate } from "./fencing-category.js";
+import type { ExtensionQueryable } from "@gu/extension-host";
+
+type MemberCategoryContext = {
+  season: string;
+  values: string[];
+  compute(birthDate: string | null): { fencingCategory: string | null; categoryError: string | null };
+};
 
 export type PrintDocumentTarget =
   | { type: "all" }
@@ -59,14 +63,17 @@ const coreVariables: PrintVariableDefinition[] = [
   { token: "{date_du_jour}", label: "Date du jour", source: "member" }
 ];
 
-export async function getPrintDocumentVariables(database: Database) {
+export async function getPrintDocumentVariables(database: ExtensionQueryable) {
   const fields = await selectedFields(database);
   return [...coreVariables, ...additionalVariables(fields)];
 }
 
-export async function resolvePrintDocumentMembers(database: Database, target: PrintDocumentTarget) {
-  const [definitions, fields, membersResult] = await Promise.all([
-    getCategoryDefinitions(database),
+export async function resolvePrintDocumentMembers(
+  database: ExtensionQueryable,
+  target: PrintDocumentTarget,
+  categoryContext: MemberCategoryContext | null
+) {
+  const [fields, membersResult] = await Promise.all([
     selectedFields(database),
     database.query<MemberRow>(`
       SELECT
@@ -107,7 +114,7 @@ export async function resolvePrintDocumentMembers(database: Database, target: Pr
     if (groups.rows.length !== new Set(target.groupIds).size) throw new Error("Un des groupes choisis n'existe pas.");
   }
 
-  const knownCategories = new Set(definitions.map((definition) => definition.name));
+  const knownCategories = new Set(categoryContext?.values ?? []);
   if (target.type === "categories" && target.categories.some((category) => !knownCategories.has(category))) {
     throw new Error("Une des catégories choisies n'existe pas pour la saison actuelle.");
   }
@@ -119,7 +126,7 @@ export async function resolvePrintDocumentMembers(database: Database, target: Pr
 
   for (const row of membersResult.rows) {
     const birthDate = normalizeBirthDate(row.birthDate);
-    const category = categoryForBirthDate(birthDate, definitions);
+    const category = categoryContext?.compute(birthDate).fencingCategory ?? null;
     if (target.type === "healthMissing" && row.healthDocumentValid) continue;
     if (target.type === "groups" && !row.groups.some((group) => target.groupIds.includes(group.id))) continue;
     if (target.type === "categories" && (!category || !target.categories.includes(category))) continue;
@@ -190,7 +197,7 @@ export function sanitizePrintDocumentHtml(html: string) {
 export async function createCombinedPrintDocument(html: string, members: PrintDocumentMember[], title: string) {
   const pdf = await PDFDocument.create();
   pdf.setTitle(title);
-  pdf.setCreator("Gestion club CEY");
+  pdf.setCreator("Gestion club");
   const fonts = await embedFonts(pdf);
   for (const member of members) renderMember(pdf, fonts, html, member.variables);
   return Buffer.from(await pdf.save());
@@ -199,7 +206,7 @@ export async function createCombinedPrintDocument(html: string, members: PrintDo
 export async function createIndividualPrintDocument(html: string, member: PrintDocumentMember, title: string) {
   const pdf = await PDFDocument.create();
   pdf.setTitle(`${title} — ${member.firstName} ${member.lastName}`);
-  pdf.setCreator("Gestion club CEY");
+  pdf.setCreator("Gestion club");
   const fonts = await embedFonts(pdf);
   renderMember(pdf, fonts, html, member.variables);
   return Buffer.from(await pdf.save());
@@ -212,7 +219,7 @@ export function memberPrintFileName(member: PrintDocumentMember) {
   return `${value || "adherent"}.pdf`;
 }
 
-function selectedFields(database: Database) {
+function selectedFields(database: ExtensionQueryable) {
   return database.query<FieldDefinition>(`
     SELECT field_key AS key, label, field_type AS type
     FROM helloasso_fields
@@ -432,6 +439,23 @@ function formatPhoneNumber(value: string) {
   if (/^\+33\d{9}$/.test(compact)) return `+33 ${compact.slice(3, 4)} ${compact.slice(4).match(/\d{2}/g)?.join(" ") ?? ""}`.trim();
   if (/^\d{10}$/.test(compact)) return compact.match(/\d{2}/g)?.join(" ") ?? value;
   return value;
+}
+
+function normalizeBirthDate(value: string | null) {
+  if (!value) return null;
+  const compact = value.trim();
+  const isoMatch = /^(\d{4})-(\d{2})-(\d{2})/.exec(compact);
+  const frenchMatch = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(compact);
+  const normalized = isoMatch
+    ? `${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}`
+    : frenchMatch
+      ? `${frenchMatch[3]}-${frenchMatch[2]}-${frenchMatch[1]}`
+      : null;
+  if (!normalized) return null;
+  const date = new Date(`${normalized}T12:00:00Z`);
+  return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== normalized
+    ? null
+    : normalized;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

@@ -29,5 +29,10 @@ COPY package.json package-lock.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY apps/api/migrations ./apps/api/migrations
+# Aucune extension n'est plus construite ni activée par défaut : le dossier existe (requis par
+# synchronizeBundledExtensions, qui échoue s'il est absent) mais reste vide. Chaque extension
+# s'obtient désormais uniquement via achat + téléchargement signé sur le site de vente, installé
+# depuis l'écran Extensions (POST /api/extensions/install, signature Ed25519 vérifiée).
+RUN mkdir -p ./bundled-plugins ./plugins && chown node:node ./plugins
 USER node
 CMD ["node", "apps/api/dist/bootstrap.js"]

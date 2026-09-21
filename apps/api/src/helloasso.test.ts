@@ -34,6 +34,15 @@ const config: AppConfig = {
     bootstrapAdminEmail: "",
     bootstrapAdminName: "Administrateur",
     bootstrapAdminPassword: ""
+  },
+  extensions: {
+    bundledDirectory: "bundled-plugins",
+    directory: "plugins",
+    catalogUrl: null,
+    licenseToken: null,
+    licensePublicKey: null,
+    offlineGraceDays: 30,
+    allowUnsigned: false
   }
 };
 
@@ -58,7 +67,7 @@ describe("client HelloAsso en lecture seule", () => {
     await client.listMembershipItems("campagne-test");
 
     const businessCalls = fetchMock.mock.calls.filter(([input]) => String(input).includes("/v5/"));
-    expect(businessCalls).toHaveLength(3);
+    expect(businessCalls).toHaveLength(4);
     for (const [, init] of businessCalls) {
       expect(init?.method ?? "GET").toBe("GET");
     }

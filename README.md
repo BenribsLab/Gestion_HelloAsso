@@ -23,6 +23,26 @@ L'API est aussi accessible localement sur <http://localhost:18474/api/health>.
 
 Les migrations sont exécutées automatiquement au démarrage de l'API.
 
+## Extensions
+
+Les fonctions spécialisées sont livrées comme extensions précompilées :
+
+- `fencing-categories` : catégories Escrime ;
+- `ffe-health-documents` : documents Santé FFE ;
+- `attendance-sheets` : feuilles de présence ;
+- `irl-documents` : documents papier personnalisés ;
+- `email-messaging` : messagerie SMTP.
+
+Le menu **Extensions** permet de les activer ou les désactiver. Une désactivation retire les commandes de l'interface et bloque également les routes correspondantes dans l'API. Elle ne supprime jamais les données déjà enregistrées. **Aucune extension n'est livrée ni activée par défaut** : `docker compose up --build` ne construit que le noyau (`bundled-plugins` est intentionnellement vide dans l'image publique). Chaque extension s'achète et se télécharge signée sur le site de vente, puis s'installe depuis le menu Extensions — voir la section suivante.
+
+Les cinq modules sont physiquement séparés du cœur : bundle serveur, Web Component navigateur et migrations vivent sous `extensions/`. Le menu **Extensions** accepte un paquet `.gu-plugin` sans reconstruire les images. L'archive est bornée, contrôlée contre les traversées de chemins, liens symboliques et bombes ZIP, puis sa compatibilité, ses empreintes et sa signature Ed25519 sont vérifiées avant une bascule atomique. L'ancienne version reste disponible pour un retour arrière. En production, un paquet non signé est toujours refusé ; `EXTENSION_ALLOW_UNSIGNED=true` est strictement réservé au développement.
+
+Les paquets installés et les versions de retour arrière sont conservés dans le volume Docker `plugin_data`. Le journal d'installation ne contient ni fiche d'adhérent ni document personnel. Après une installation ou un retour arrière en production, le conteneur API redémarre automatiquement grâce à sa politique Docker `restart: unless-stopped`.
+
+Pour fabriquer un paquet, construire d'abord les extensions puis utiliser `npm run package:extension -- identifiant`. La clé privée Ed25519 est indiquée uniquement sur la machine de distribution avec `GU_PLUGIN_SIGNING_KEY_FILE`; elle ne doit jamais être copiée chez un club. Le mode `GU_ALLOW_UNSIGNED_PACKAGE=true` sert seulement aux essais locaux.
+
+Le serveur central (clubs, droits par module, catalogue, téléchargement des paquets, jetons Ed25519 liés à une installation) vit **dans un dépôt séparé**, `gestion-utilisateur-licence-server` : le code qui délivre les licences ne doit jamais partir avec ce dépôt-ci chez un club. Il ne reçoit aucune donnée HelloAsso, aucun adhérent et aucun document. Le client conserve un jeton local et tolère une panne du catalogue pendant la période de grâce configurée (`EXTENSION_OFFLINE_GRACE_DAYS`). Un abonnement expiré n'efface jamais les données : il empêche une nouvelle activation ou mise à jour, tandis qu'un module déjà actif reste disponible pour permettre la lecture et l'export. La facturation Stripe reste volontairement hors du socle tant que le modèle commercial n'est pas stabilisé.
+
 Les images sont fixées sur Node.js 24 LTS, PostgreSQL 18 et nginx 1.30 stable. Les dépendances npm sont verrouillées par `package-lock.json` et contrôlées avec `npm audit`. Les images d'exécution sont réduites aux dépendances nécessaires, mises à jour au moment de la construction et prévues pour être contrôlées avec un scanner de conteneurs.
 
 ## Commandes utiles

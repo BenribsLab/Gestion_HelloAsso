@@ -8,6 +8,48 @@ export type DashboardData = {
   };
 };
 
+export type Extension = {
+  schemaVersion: 1;
+  id: string;
+  name: string;
+  description: string;
+  version: string;
+  core: { minimum: string; maximum?: string };
+  dependencies: string[];
+  optionalDependencies: string[];
+  capabilities: string[];
+  entitlementKey: string;
+  defaultEnabled: boolean;
+  entrypoints: { server?: string; web?: string; styles?: string };
+  migrations: string[];
+  routes: string[];
+  enabled: boolean;
+  source: "bundled" | "local" | "central";
+  signatureStatus: "bundled" | "verified" | "unsigned" | "invalid";
+  licenseStatus: "local" | "valid" | "grace" | "expired" | "unavailable";
+  installedAt: string;
+  updatedAt: string;
+  errorMessage: string | null;
+};
+
+export type ExtensionConfiguration = {
+  centralServerConfigured: boolean;
+  catalogUrl: string | null;
+  offlineGraceDays: number;
+  allowUnsigned: boolean;
+};
+
+export type ExtensionInstallation = {
+  id: string;
+  extensionId: string | null;
+  version: string | null;
+  outcome: "installed" | "failed" | "rolled_back";
+  source: "signed" | "developer";
+  packageHash: string | null;
+  message: string | null;
+  createdAt: string;
+};
+
 export type AuthUser = {
   id: string | null;
   email: string;
@@ -136,104 +178,16 @@ export type GroupCriterion = {
   values: Array<{ value: string; count: number }>;
 };
 
-export type CategoryConfiguration = {
-  season: string;
-  seasonStartYear: number;
-  rolloverDate: string;
-  items: Array<{
-    id: string;
-    name: string;
-    birthYearFrom: number;
-    birthYearTo: number;
-    sortOrder: number;
-    membersCount: number;
-  }>;
-};
-
 export type TrainingSchedule = {
   weekday: number;
   startTime: string;
   endTime: string;
 };
 
-export type SchoolHoliday = {
-  name: string;
-  startDate: string;
-  endDate: string;
-};
-
-export type AttendanceSheet = {
-  group: { id: string; name: string; createdAt: string };
-  schedules: TrainingSchedule[];
-  members: Array<{ id: string; firstName: string; lastName: string; birthDate: string | null; fencingCategory: string | null; categoryError: string | null }>;
-  fencingSeason: string;
-  holidays: SchoolHoliday[];
-  sessions: Array<{ date: string; startTime: string; endTime: string }>;
-  attendance: AttendanceRecord[];
-  startDate: string;
-  endDate: string;
-};
-
-export type AttendanceRecord = {
-  memberId: string;
-  date: string;
-  startTime: string;
-  status: "present" | "absent" | "excused";
-};
-
-export type EmailTarget =
-  | { type: "all" }
-  | { type: "groups"; groupIds: string[] }
-  | { type: "single"; email: string };
-
-export type EmailStatus = {
-  configured: boolean;
-  host: string;
-  port: number;
-  secure: boolean;
-  fromEmail: string | null;
-  fromName: string;
-  replyTo: string | null;
-};
-
-export type EmailMessageHistory = {
-  id: string;
-  subject: string;
-  targetLabel: string;
-  status: "sending" | "sent" | "partial" | "failed";
-  recipientsCount: number;
-  sentCount: number;
-  failedCount: number;
-  createdAt: string;
-  finishedAt: string | null;
-};
-
-export type PrintDocumentTarget =
-  | { type: "all" }
-  | { type: "healthMissing" }
-  | { type: "groups"; groupIds: string[] }
-  | { type: "categories"; categories: string[] }
-  | { type: "members"; memberIds: string[] };
-
-export type PrintDocumentVariable = {
-  token: string;
-  label: string;
-  source: "member" | "additional";
-};
-
-export type PrintDocumentTemplate = {
-  id: string;
-  name: string;
-  documentTitle: string;
-  contentHtml: string;
-  output: "individual" | "combined";
-  createdAt: string;
-  updatedAt: string;
-};
-
 let csrfToken: string | null = null;
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+/** Exporté pour que les bundles de modules réutilisent la session et le jeton CSRF du cœur. */
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
   if (init?.body && !(init.body instanceof FormData)) {
     headers.set("content-type", "application/json");
@@ -252,7 +206,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = (await response.json().catch(() => null)) as { message?: string } | null;
     if (response.status === 401 && path !== "/api/auth/login" && path !== "/api/auth/session") {
       csrfToken = null;
-      window.dispatchEvent(new Event("cey-auth-required"));
+      window.dispatchEvent(new Event("gu-auth-required"));
     }
     throw new Error(body?.message ?? "La requête a échoué.");
   }
@@ -260,7 +214,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function requestBlob(path: string, init?: RequestInit) {
+/** Exporté pour que les bundles de modules puissent télécharger un fichier binaire produit par le serveur. */
+export async function requestBlob(path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers);
   const method = (init?.method ?? "GET").toUpperCase();
   if (init?.body && !(init.body instanceof FormData)) headers.set("content-type", "application/json");
@@ -308,20 +263,23 @@ export const api = {
   disableUser: (userId: string) =>
     request<{ id: string; disabled: true }>(`/api/auth/users/${userId}`, { method: "DELETE" }),
   dashboard: () => request<DashboardData>("/api/dashboard"),
-  members: () => request<{ season: string; items: Member[] }>("/api/members"),
-  groups: () => request<{ items: Group[] }>("/api/groups"),
-  categories: () => request<CategoryConfiguration>("/api/categories"),
-  createCategory: (input: { name: string; birthYearFrom: number; birthYearTo: number }) =>
-    request<{ id: string }>("/api/categories", { method: "POST", body: JSON.stringify(input) }),
-  updateCategory: (categoryId: string, input: { name: string; birthYearFrom: number; birthYearTo: number }) =>
-    request<{ id: string; updated: true }>(`/api/categories/${categoryId}`, { method: "PUT", body: JSON.stringify(input) }),
-  deleteCategory: (categoryId: string) =>
-    request<{ id: string; deleted: true }>(`/api/categories/${categoryId}`, { method: "DELETE" }),
-  updateCategorySettings: (rolloverDate: string) =>
-    request<CategoryConfiguration>("/api/categories/settings", {
+  extensions: () => request<{ items: Extension[]; configuration: ExtensionConfiguration }>("/api/extensions"),
+  setExtensionEnabled: (extensionId: string, enabled: boolean) =>
+    request<Extension>(`/api/extensions/${encodeURIComponent(extensionId)}`, {
       method: "PUT",
-      body: JSON.stringify({ rolloverDate })
+      body: JSON.stringify({ enabled })
     }),
+  installExtension: (file: File) => {
+    const body = new FormData(); body.append("file", file);
+    return request<{ id: string; version: string; signatureStatus: string; restartScheduled: boolean }>(
+      "/api/extensions/install", { method: "POST", body }
+    );
+  },
+  extensionInstallations: () => request<{ items: ExtensionInstallation[] }>("/api/extensions/installations"),
+  extensionRollbacks: (extensionId: string) => request<{ items: Array<{ directory: string; version: string }> }>(`/api/extensions/${extensionId}/rollbacks`),
+  rollbackExtension: (extensionId: string, directory: string) => request<{ id: string; version: string; restartScheduled: boolean }>(`/api/extensions/${extensionId}/rollback`, { method: "POST", body: JSON.stringify({ directory }) }),
+  members: () => request<{ items: Member[] }>("/api/members"),
+  groups: () => request<{ items: Group[] }>("/api/groups"),
   groupCriteria: () => request<{ items: GroupCriterion[] }>("/api/group-criteria"),
   createGroup: (input: { name: string; description: string; criterion: { fieldKey: string; values: string[] } }) =>
     request<Group>("/api/groups", { method: "POST", body: JSON.stringify(input) }),
@@ -349,51 +307,6 @@ export const api = {
       `/api/members/${memberId}/overrides/${encodeURIComponent(fieldKey)}`,
       { method: "DELETE" }
     ),
-  setGroupSchedules: (groupId: string, schedules: TrainingSchedule[]) =>
-    request<{ groupId: string; schedules: TrainingSchedule[] }>(`/api/groups/${groupId}/schedules`, {
-      method: "PUT",
-      body: JSON.stringify({ schedules })
-    }),
-  schoolHolidays: (startDate: string, endDate: string) =>
-    request<{ zone: string; academy: string; items: SchoolHoliday[] }>(
-      `/api/school-holidays?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`
-    ),
-  attendanceSheet: (groupId: string, startDate: string, endDate: string) =>
-    request<AttendanceSheet>(
-      `/api/groups/${groupId}/attendance-sheet?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`
-    ),
-  saveAttendance: (groupId: string, startDate: string, endDate: string, records: AttendanceRecord[]) =>
-    request<{ savedCount: number }>(`/api/groups/${groupId}/attendance`, {
-      method: "PUT",
-      body: JSON.stringify({ startDate, endDate, records })
-    }),
-  emailStatus: () => request<EmailStatus>("/api/email/status"),
-  verifyEmail: () => request<{ connected: true }>("/api/email/verify", { method: "POST" }),
-  previewEmailRecipients: (target: EmailTarget) =>
-    request<{ targetLabel: string; membersCount: number; recipientsCount: number; withoutEmailCount: number }>(
-      "/api/email/recipients-preview",
-      { method: "POST", body: JSON.stringify(target) }
-    ),
-  emailMessages: () => request<{ items: EmailMessageHistory[] }>("/api/email/messages"),
-  sendEmailMessage: (input: { subject: string; body: string; target: EmailTarget }) =>
-    request<{ messageId: string; status: "sent" | "partial" | "failed"; recipientsCount: number; sentCount: number; failedCount: number }>(
-      "/api/email/messages",
-      { method: "POST", body: JSON.stringify(input) }
-    ),
-  printDocumentConfig: () => request<{ variables: PrintDocumentVariable[] }>("/api/print-documents/config"),
-  printDocumentTemplates: () => request<{ items: PrintDocumentTemplate[] }>("/api/print-documents/templates"),
-  createPrintDocumentTemplate: (input: { name: string; documentTitle: string; contentHtml: string; output: "individual" | "combined" }) =>
-    request<PrintDocumentTemplate>("/api/print-documents/templates", { method: "POST", body: JSON.stringify(input) }),
-  updatePrintDocumentTemplate: (templateId: string, input: { name: string; documentTitle: string; contentHtml: string; output: "individual" | "combined" }) =>
-    request<PrintDocumentTemplate>(`/api/print-documents/templates/${templateId}`, { method: "PUT", body: JSON.stringify(input) }),
-  deletePrintDocumentTemplate: (templateId: string) =>
-    request<{ templateId: string; deleted: true }>(`/api/print-documents/templates/${templateId}`, { method: "DELETE" }),
-  exportPrintDocuments: (input: {
-    title: string;
-    contentHtml: string;
-    output: "individual" | "combined";
-    target: PrintDocumentTarget;
-  }) => requestBlob("/api/print-documents/export", { method: "POST", body: JSON.stringify(input) }),
   checkHelloAsso: () =>
     request<{ connected: true; organization: { name: string; slug: string } }>(
       "/api/helloasso/check",
@@ -437,30 +350,8 @@ export const api = {
     request<{ revertedToHelloAsso: true }>(
       `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}/local`, { method: "DELETE" }
     ),
-  classifyMemberDocument: (memberId: string, fieldKey: string, classification: "certificate" | "attestation" | "questionnaire" | "unknown") =>
-    request<{ classification: string }>(
-      `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}/classification`,
-      { method: "PUT", body: JSON.stringify({ classification }) }
-    ),
   memberDocumentUrl: (memberId: string, fieldKey: string, download = false) =>
-    `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}${download ? "?download=1" : ""}`,
-  documentConfig: () => request<{
-    fields: Array<{ key: string; label: string; health: boolean; availableCount: number; newCount: number }>;
-    identitySource: "member" | "payer";
-    template: string;
-    documentSelection: "new" | "all";
-  }>("/api/documents/config"),
-  startDocumentExport: (input: {
-    fieldKey: string; scope: "all" | "groups"; groupIds: string[];
-    identitySource: "member" | "payer"; template: string;
-    documentSelection: "new" | "all"; reanalyze: boolean;
-  }) => request<{ exportId: string }>("/api/documents/exports", { method: "POST", body: JSON.stringify(input) }),
-  documentExportStatus: (exportId: string) => request<{
-    exportId: string; status: "running" | "ready" | "failed"; total: number; processed: number;
-    certificateCount: number; attestationCount: number; questionnaireCount: number; unknownCount: number;
-    error: string | null;
-  }>(`/api/documents/exports/${exportId}`),
-  downloadDocumentExport: (exportId: string) => requestBlob(`/api/documents/exports/${exportId}/download`)
+    `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}${download ? "?download=1" : ""}`
 };
 
 function dispositionFileName(value: string | null) {

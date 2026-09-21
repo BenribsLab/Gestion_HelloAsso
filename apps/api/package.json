@@ -9,7 +9,7 @@
     "migrate": "node dist/migrate.js",
     "dev": "tsx watch src/server.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "test": "vitest run src"
   },
   "dependencies": {
     "@fastify/cookie": "^11.1.2",
@@ -20,6 +20,8 @@
     "nodemailer": "10.0.10",
     "pdf-lib": "1.17.1",
     "pg": "8.23.0",
+    "semver": "^7.8.5",
+    "yauzl": "^3.4.0",
     "zod": "4.6.5"
   },
   "devDependencies": {
@@ -27,6 +29,8 @@
     "@types/node": "26.5.1",
     "@types/nodemailer": "8.0.2",
     "@types/pg": "8.23.1",
+    "@types/semver": "^7.7.1",
+    "@types/yauzl": "^3.4.0",
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vitest": "5.0.1"
