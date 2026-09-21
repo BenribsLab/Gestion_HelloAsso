@@ -34,14 +34,11 @@ export function registerExtensionInstaller(server: FastifyInstance, database: Da
       return reply.code(400).send({ message: "Le fichier doit porter l'extension .gu-plugin." });
     }
     const archive = await part.toBuffer();
-    const packageHash = createHash("sha256").update(archive).digest("hex");
-    let result: Awaited<ReturnType<typeof installPackage>>;
+    let result: Awaited<ReturnType<typeof installExtensionArchive>>;
     try {
-      result = await installPackage(archive, packageHash, database, config, registry);
-      await audit(database, result.manifest.id, result.manifest.version, "installed", result.signatureStatus === "verified" ? "signed" : "developer", packageHash, null);
+      result = await installExtensionArchive(archive, database, config, registry);
     } catch (error) {
       const message = safeError(error);
-      await audit(database, null, null, "failed", config.extensions.allowUnsigned ? "developer" : "signed", packageHash, message);
       const status = error instanceof ExtensionRegistryError
         ? error.statusCode
         : /sign|cl[eé] publique/i.test(message)
@@ -96,6 +93,41 @@ export function registerExtensionInstaller(server: FastifyInstance, database: Da
     reply.send({ id: extensionId, version: manifest.version, restartScheduled: config.nodeEnv === "production" });
     scheduleRestart(config);
   });
+}
+
+/** Installe un paquet chargé en mémoire, depuis HTTP ou depuis le provisionneur central. */
+export async function installExtensionArchive(
+  archive: Buffer,
+  database: Database,
+  config: AppConfig,
+  registry: ExtensionRegistry
+) {
+  if (archive.length > maxArchiveBytes) throw new Error("Le paquet dépasse 50 Mo.");
+  const packageHash = createHash("sha256").update(archive).digest("hex");
+  try {
+    const result = await installPackage(archive, packageHash, database, config, registry);
+    await audit(
+      database,
+      result.manifest.id,
+      result.manifest.version,
+      "installed",
+      result.signatureStatus === "verified" ? "signed" : "developer",
+      packageHash,
+      null
+    );
+    return { ...result, packageHash };
+  } catch (error) {
+    await audit(
+      database,
+      null,
+      null,
+      "failed",
+      config.extensions.allowUnsigned ? "developer" : "signed",
+      packageHash,
+      safeError(error)
+    );
+    throw error;
+  }
 }
 
 async function installPackage(archive: Buffer, packageHash: string, database: Database, config: AppConfig, registry: ExtensionRegistry) {

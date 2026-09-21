@@ -41,6 +41,7 @@ const environmentSchema = z.object({
   EXTENSION_CATALOG_URL: z.union([z.url(), z.literal("")]).optional().default(""),
   EXTENSION_LICENSE_TOKEN: z.string().trim().optional().default(""),
   EXTENSION_LICENSE_PUBLIC_KEY: z.string().trim().optional().default(""),
+  EXTENSION_LICENSE_PUBLIC_KEY_BASE64: z.string().trim().optional().default(""),
   EXTENSION_LICENSE_PUBLIC_KEY_FILE: z.string().trim().optional().default(""),
   EXTENSION_OFFLINE_GRACE_DAYS: z.coerce.number().int().min(0).max(365).default(30),
   EXTENSION_ALLOW_UNSIGNED: z.enum(["true", "false"]).default("false")
@@ -58,7 +59,16 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env) {
   const helloAssoSecret = secretValue("secret HelloAsso", parsed.HELLOASSO_CLIENT_SECRET, parsed.HELLOASSO_CLIENT_SECRET_FILE);
   const smtpPassword = secretValue("mot de passe SMTP", parsed.SMTP_PASSWORD, parsed.SMTP_PASSWORD_FILE);
   const bootstrapPassword = secretValue("mot de passe administrateur", parsed.BOOTSTRAP_ADMIN_PASSWORD, parsed.BOOTSTRAP_ADMIN_PASSWORD_FILE);
-  const extensionLicensePublicKey = secretValue("clé publique des extensions", parsed.EXTENSION_LICENSE_PUBLIC_KEY, parsed.EXTENSION_LICENSE_PUBLIC_KEY_FILE);
+  let extensionLicensePublicKey = secretValue("clé publique des extensions", parsed.EXTENSION_LICENSE_PUBLIC_KEY, parsed.EXTENSION_LICENSE_PUBLIC_KEY_FILE);
+  if (parsed.EXTENSION_LICENSE_PUBLIC_KEY_BASE64) {
+    if (extensionLicensePublicKey) {
+      throw new Error("Configurez la clé publique des extensions directement, en base64 ou par fichier, pas plusieurs à la fois.");
+    }
+    extensionLicensePublicKey = Buffer.from(parsed.EXTENSION_LICENSE_PUBLIC_KEY_BASE64, "base64").toString("utf8");
+    if (!extensionLicensePublicKey.includes("BEGIN PUBLIC KEY")) {
+      throw new Error("EXTENSION_LICENSE_PUBLIC_KEY_BASE64 est invalide.");
+    }
+  }
   const settingsEncryptionKey = parseEncryptionKey(secretValue(
     "clé de chiffrement des réglages",
     parsed.SETTINGS_ENCRYPTION_KEY,

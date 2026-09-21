@@ -37,6 +37,15 @@ describe("loadConfig", () => {
     });
     expect(config.settingsEncryptionKey).toEqual(Buffer.alloc(32, 4));
   });
+
+  it("charge la clé publique des extensions depuis une variable base64", () => {
+    const publicKey = "-----BEGIN PUBLIC KEY-----\ntest\n-----END PUBLIC KEY-----\n";
+    const config = loadConfig({
+      ...baseEnvironment,
+      EXTENSION_LICENSE_PUBLIC_KEY_BASE64: Buffer.from(publicKey).toString("base64")
+    });
+    expect(config.extensions.licensePublicKey).toBe(publicKey);
+  });
 });
 
 describe("configuration HelloAsso", () => {
