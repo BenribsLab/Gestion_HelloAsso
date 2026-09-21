@@ -17,7 +17,9 @@ import type {
   ExtensionRouteMethod,
   ExtensionRouteOptions,
   ExtensionServerHost,
-  ExtensionServerModule
+  ExtensionServerModule,
+  ExtensionStreamHandler,
+  ExtensionWebSocket
 } from "./extension-host.js";
 import { refreshDynamicGroups } from "./dynamic-groups.js";
 import { safeDownloadName, zipBuffer } from "./archive-utils.js";
@@ -96,6 +98,22 @@ function buildHost(options: LoadOptions, manifest: ExtensionManifest): Extension
       : {}),
     ...(capabilities.has("helloasso-documents")
       ? { getHelloAssoDocument: options.helloasso.getDocument }
+      : {}),
+    ...(capabilities.has("remote-browser-relay")
+      ? {
+          remoteBrowserRelay: {
+            registerStreamRoute(path: string, handler: ExtensionStreamHandler) {
+              if (!manifest.routes.some((route) => routeMatchesPath(route, path))) {
+                throw new Error(
+                  `Le module ${manifest.id} tente d'enregistrer ${path}, hors des préfixes déclarés.`
+                );
+              }
+              options.server.get(path, { websocket: true }, (socket, request) => {
+                void handler(wrapWebSocket(socket), request as unknown as ExtensionRequest);
+              });
+            }
+          }
+        }
       : {})
   };
 
@@ -134,5 +152,23 @@ function buildHost(options: LoadOptions, manifest: ExtensionManifest): Extension
           handler(request as unknown as ExtensionRequest, reply as unknown as ExtensionReply)
       });
     }
+  };
+}
+
+/** Adapte le socket `ws` brut au contrat structurel exposé aux modules. */
+function wrapWebSocket(socket: import("ws").WebSocket): ExtensionWebSocket {
+  function on(event: "message", listener: (data: Buffer) => void): void;
+  function on(event: "close", listener: () => void): void;
+  function on(event: "message" | "close", listener: ((data: Buffer) => void) | (() => void)): void {
+    if (event === "message") {
+      socket.on("message", (data) => (listener as (data: Buffer) => void)(Buffer.isBuffer(data) ? data : Buffer.from(data as ArrayBuffer)));
+    } else {
+      socket.on("close", () => (listener as () => void)());
+    }
+  }
+  return {
+    send: (data) => socket.send(data),
+    on,
+    close: (code, reason) => socket.close(code, reason)
   };
 }

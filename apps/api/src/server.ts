@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import cookie from "@fastify/cookie";
 import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
+import websocket from "@fastify/websocket";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { z } from "zod";
@@ -57,6 +58,9 @@ await server.register(rateLimit, {
   timeWindow: "1 minute",
   errorResponseBuilder: () => ({ statusCode: 429, message: "Trop de requêtes. Réessayez dans quelques instants." })
 });
+// Uniquement pour les modules déclarant la capacité "remote-browser-relay" (voir
+// extension-loader.ts) : aucune route WebSocket n'est enregistrée par le noyau lui-même.
+await server.register(websocket);
 await prepareAuthentication(database, config);
 await installSecurity(server, database, config);
 const extensions = await ExtensionRegistry.create(database, config);

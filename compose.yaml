@@ -60,6 +60,10 @@ services:
       EXTENSION_LICENSE_PUBLIC_KEY_FILE: ${EXTENSION_LICENSE_PUBLIC_KEY_FILE:-}
       EXTENSION_OFFLINE_GRACE_DAYS: ${EXTENSION_OFFLINE_GRACE_DAYS:-30}
       EXTENSION_ALLOW_UNSIGNED: ${EXTENSION_ALLOW_UNSIGNED:-false}
+      # Utilisé par l'extension ffe-licensing (host.config) pour joindre le service dédié qui
+      # pilote le navigateur — jamais exposé au-delà de ce conteneur ni du réseau interne.
+      FFE_BROWSER_URL: ${FFE_BROWSER_URL:-http://ffe-browser:4000}
+      FFE_BROWSER_INTERNAL_TOKEN: ${FFE_BROWSER_INTERNAL_TOKEN:-}
     depends_on:
       database:
         condition: service_healthy
@@ -80,6 +84,35 @@ services:
     networks:
       - frontend
       - backend
+
+  # Seul composant du dépôt à porter une dépendance lourde/à risque (binaire Chromium natif) —
+  # isolé dans son propre service plutôt qu'embarqué dans apps/api, jamais distribué dans un
+  # .gu-plugin signé. Jamais exposé publiquement, jamais sur le réseau frontend : atteignable
+  # uniquement depuis api, sur backend, protégé en plus par un secret partagé applicatif.
+  ffe-browser:
+    build:
+      context: .
+      dockerfile: services/ffe-browser/Dockerfile
+    environment:
+      PORT: 4000
+      FFE_BROWSER_INTERNAL_TOKEN: ${FFE_BROWSER_INTERNAL_TOKEN:-}
+      SESSIONS_DIRECTORY: /data/sessions
+    volumes:
+      - ffe_browser_sessions:/data/sessions
+    # Chromium a besoin de plus que les 64 Mo par défaut de /dev/shm, sous peine de crash aléatoire
+    # en cours de rendu de page.
+    shm_size: "1gb"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+    networks:
+      - backend
+      # backend est "internal: true" (aucune sortie internet) : ce réseau dédié, non interne,
+      # sert uniquement à atteindre dirigeant.escrime-ffe.fr — aucun autre service dessus.
+      - ffe_egress
 
   web:
     build:
@@ -102,8 +135,10 @@ services:
 volumes:
   postgres_data:
   plugin_data:
+  ffe_browser_sessions:
 
 networks:
   frontend:
   backend:
     internal: true
+  ffe_egress:

@@ -62,10 +62,31 @@ export interface ExtensionRouteOptions {
 }
 
 /**
+ * Canal WebSocket structurel, jamais le type `ws` brut : un module reste indépendant de la
+ * bibliothèque WebSocket réellement utilisée par l'hôte.
+ */
+export interface ExtensionWebSocket {
+  send(data: string | Buffer): void;
+  on(event: "message", listener: (data: Buffer) => void): void;
+  on(event: "close", listener: () => void): void;
+  close(code?: number, reason?: string): void;
+}
+
+export type ExtensionStreamHandler = (
+  socket: ExtensionWebSocket,
+  request: ExtensionRequest
+) => void | Promise<void>;
+
+/**
  * Capacités déclarées au manifeste qui donnent réellement accès à quelque chose : sans la
  * capacité, la clé correspondante est absente de `config` / `core`.
  */
-export const grantableCapabilities = ["smtp", "dynamic-groups", "helloasso-documents"] as const;
+export const grantableCapabilities = [
+  "smtp",
+  "dynamic-groups",
+  "helloasso-documents",
+  "remote-browser-relay"
+] as const;
 export type GrantableCapability = (typeof grantableCapabilities)[number];
 
 export interface ExtensionHostConfig {
@@ -102,6 +123,15 @@ export interface ExtensionHostCore {
     mediaType: string;
     fileName: string | null;
   }>;
+  /**
+   * Seul moyen pour un module d'obtenir un canal WebSocket : `route()` ne fait que du HTTP
+   * simple. Le chemin est soumis à la même vérification de préfixe que `route()`, et la requête
+   * d'upgrade passe par la même chaîne d'authentification (cookie de session) que le reste de
+   * l'application avant que ce gestionnaire soit appelé.
+   */
+  remoteBrowserRelay?: {
+    registerStreamRoute(path: string, handler: ExtensionStreamHandler): void;
+  };
 }
 
 export interface ExtensionServerHost {
