@@ -970,7 +970,7 @@ function Members({
           <div className="table-wrap data-table-wrap">
           <table className="data-table">
             <thead>
-              <tr><th>Nom</th>{categoriesEnabled && <th>Catégorie FFE</th>}<th>Contact</th>{memberColumns.map((column) => <th key={column.key}>{column.label}</th>)}<th>Groupes</th><th /></tr>
+              <tr><th>Nom</th>{categoriesEnabled && <th>Catégorie FFE</th>}<th>Contact</th>{memberColumns.map((column) => <th key={column.key} style={column.width ? { width: column.width } : undefined}>{column.label}</th>)}<th>Groupes</th><th /></tr>
               <tr className="filter-row">
                 <th><FilterInput label="Filtrer par nom" value={filters.name} onChange={(name) => setFilters((current) => ({ ...current, name }))} /></th>
                 {categoriesEnabled && <th><ChoiceFilter label="Catégorie" options={filterOptions.category} selection={filters.category} onToggle={(value) => setFilters((current) => ({ ...current, category: toggledSet(current.category, value) }))} onClear={() => setFilters((current) => ({ ...current, category: new Set() }))} /></th>}
@@ -1399,7 +1399,7 @@ function Groups({
             <ListSearch value={memberSearch} onChange={setMemberSearch} placeholder="Rechercher dans ce groupe…" />
             <Pagination page={memberPage} pageSize={memberPageSize} total={filteredGroupMembers.length} onPageChange={setMemberPage} onPageSizeChange={setMemberPageSize} />
             <div className="table-wrap modal-table-wrap"><table className="data-table">
-              <thead><tr><th>Adhérent</th>{categoriesEnabled && <th>Catégorie</th>}{memberColumns.map((column) => <th key={column.key}>{column.label}</th>)}<th>Autres groupes</th><th>Destination</th><th /></tr><tr className="filter-row">
+              <thead><tr><th>Adhérent</th>{categoriesEnabled && <th>Catégorie</th>}{memberColumns.map((column) => <th key={column.key} style={column.width ? { width: column.width } : undefined}>{column.label}</th>)}<th>Autres groupes</th><th>Destination</th><th /></tr><tr className="filter-row">
                 <th><FilterInput label="Filtrer par nom" value={memberFilters.name} onChange={(name) => setMemberFilters((current) => ({ ...current, name }))} /></th>
                 {categoriesEnabled && <th><ChoiceFilter label="Catégorie" options={groupMemberFilterOptions.category} selection={memberFilters.category} onToggle={(value) => setMemberFilters((current) => ({ ...current, category: toggledSet(current.category, value) }))} onClear={() => setMemberFilters((current) => ({ ...current, category: new Set() }))} /></th>}
                 {memberColumns.map((column) => <th key={column.key}><ChoiceFilter label={column.label} options={groupMemberFilterOptions.extensions[column.key] ?? []} selection={memberFilters.extensions[column.key] ?? new Set()} onToggle={(value) => setMemberFilters((current) => ({ ...current, extensions: { ...current.extensions, [column.key]: toggledSet(current.extensions[column.key] ?? new Set(), value) } }))} onClear={() => setMemberFilters((current) => ({ ...current, extensions: { ...current.extensions, [column.key]: new Set() } }))} /></th>)}

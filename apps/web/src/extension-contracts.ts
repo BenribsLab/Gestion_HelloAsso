@@ -73,6 +73,14 @@ export type RegisteredMemberColumn = {
   label: string;
   element: string;
   filterValue(member: ExtensionMemberSubject): string;
+  /**
+   * Le tableau des adhérents utilise `table-layout: fixed` (évite que les colonnes sautent
+   * pendant qu'une colonne d'extension charge ses données de façon asynchrone) — ce qui répartit
+   * sinon la largeur à parts strictement égales entre toutes les colonnes. Un module dont la
+   * colonne est compacte (badge, liste déroulante courte) doit préciser une largeur explicite
+   * pour ne pas prendre plus de place que nécessaire au détriment des colonnes texte du cœur.
+   */
+  width?: string;
 };
 
 export type RegisteredDocumentPanel = {
