@@ -581,6 +581,12 @@ function includesText(value: string, query: string) {
   return normalizeText(value).includes(normalizeText(query));
 }
 
+function isInteractiveRowTarget(target: EventTarget | null) {
+  return target instanceof Element && Boolean(target.closest(
+    "button, input, select, textarea, a, label, summary, [role='button'], [contenteditable='true']"
+  ));
+}
+
 function normalizeText(value: string) {
   return value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("fr").trim();
 }
@@ -989,7 +995,9 @@ function Members({
               </tr>
             </thead>
             <tbody>
-              {visibleMembers.map((member) => <tr className="clickable-row" key={member.id} onClick={() => edit(member)}>
+              {visibleMembers.map((member) => <tr className="clickable-row" key={member.id} onClick={(event) => {
+                if (!isInteractiveRowTarget(event.target)) edit(member);
+              }}>
                 <td className="member-name-cell"><button className="member-name-button" type="button" onClick={() => edit(member)}><strong>{member.lastName} {member.firstName}</strong></button></td>
                 {categoriesEnabled && <td><CategoryBadge member={member} /></td>}
                 <td className="member-contact-cell">{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "—")}</td>
