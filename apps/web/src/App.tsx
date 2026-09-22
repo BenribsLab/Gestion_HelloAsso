@@ -969,8 +969,16 @@ function Members({
           <Pagination page={page} pageSize={pageSize} total={filteredMembers.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
           <div className="table-wrap data-table-wrap">
           <table className="data-table">
+            <colgroup>
+              <col className="member-name-column" />
+              {categoriesEnabled && <col className="member-category-column" />}
+              <col className="member-contact-column" />
+              {memberColumns.map((column) => <col className="member-extension-column" key={column.key} style={{ width: column.width ?? "140px" }} />)}
+              <col className="member-groups-column" />
+              <col className="member-action-column" />
+            </colgroup>
             <thead>
-              <tr><th>Nom</th>{categoriesEnabled && <th>Catégorie FFE</th>}<th>Contact</th>{memberColumns.map((column) => <th key={column.key} style={column.width ? { width: column.width } : undefined}>{column.label}</th>)}<th>Groupes</th><th /></tr>
+              <tr><th>Nom</th>{categoriesEnabled && <th>Catégorie FFE</th>}<th>Contact</th>{memberColumns.map((column) => <th key={column.key}>{column.label}</th>)}<th>Groupes</th><th /></tr>
               <tr className="filter-row">
                 <th><FilterInput label="Filtrer par nom" value={filters.name} onChange={(name) => setFilters((current) => ({ ...current, name }))} /></th>
                 {categoriesEnabled && <th><ChoiceFilter label="Catégorie" options={filterOptions.category} selection={filters.category} onToggle={(value) => setFilters((current) => ({ ...current, category: toggledSet(current.category, value) }))} onClear={() => setFilters((current) => ({ ...current, category: new Set() }))} /></th>}
@@ -982,9 +990,9 @@ function Members({
             </thead>
             <tbody>
               {visibleMembers.map((member) => <tr className="clickable-row" key={member.id} onClick={() => edit(member)}>
-                <td><button className="member-name-button" type="button" onClick={() => edit(member)}><strong>{member.lastName} {member.firstName}</strong></button></td>
+                <td className="member-name-cell"><button className="member-name-button" type="button" onClick={() => edit(member)}><strong>{member.lastName} {member.firstName}</strong></button></td>
                 {categoriesEnabled && <td><CategoryBadge member={member} /></td>}
-                <td>{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "—")}</td>
+                <td className="member-contact-cell">{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "—")}</td>
                 {memberColumns.map((column) => <td key={column.key}><ExtensionMemberCell column={column} member={member} /></td>)}
                 <td><GroupBadges groups={member.groups} /></td>
                 <td className="row-action"><span className="row-chevron" aria-hidden="true">›</span></td>
@@ -1399,7 +1407,15 @@ function Groups({
             <ListSearch value={memberSearch} onChange={setMemberSearch} placeholder="Rechercher dans ce groupe…" />
             <Pagination page={memberPage} pageSize={memberPageSize} total={filteredGroupMembers.length} onPageChange={setMemberPage} onPageSizeChange={setMemberPageSize} />
             <div className="table-wrap modal-table-wrap"><table className="data-table">
-              <thead><tr><th>Adhérent</th>{categoriesEnabled && <th>Catégorie</th>}{memberColumns.map((column) => <th key={column.key} style={column.width ? { width: column.width } : undefined}>{column.label}</th>)}<th>Autres groupes</th><th>Destination</th><th /></tr><tr className="filter-row">
+              <colgroup>
+                <col className="group-member-name-column" />
+                {categoriesEnabled && <col className="member-category-column" />}
+                {memberColumns.map((column) => <col className="member-extension-column" key={column.key} style={{ width: column.width ?? "140px" }} />)}
+                <col className="group-other-groups-column" />
+                <col className="group-destination-column" />
+                <col className="group-action-column" />
+              </colgroup>
+              <thead><tr><th>Adhérent</th>{categoriesEnabled && <th>Catégorie</th>}{memberColumns.map((column) => <th key={column.key}>{column.label}</th>)}<th>Autres groupes</th><th>Destination</th><th /></tr><tr className="filter-row">
                 <th><FilterInput label="Filtrer par nom" value={memberFilters.name} onChange={(name) => setMemberFilters((current) => ({ ...current, name }))} /></th>
                 {categoriesEnabled && <th><ChoiceFilter label="Catégorie" options={groupMemberFilterOptions.category} selection={memberFilters.category} onToggle={(value) => setMemberFilters((current) => ({ ...current, category: toggledSet(current.category, value) }))} onClear={() => setMemberFilters((current) => ({ ...current, category: new Set() }))} /></th>}
                 {memberColumns.map((column) => <th key={column.key}><ChoiceFilter label={column.label} options={groupMemberFilterOptions.extensions[column.key] ?? []} selection={memberFilters.extensions[column.key] ?? new Set()} onToggle={(value) => setMemberFilters((current) => ({ ...current, extensions: { ...current.extensions, [column.key]: toggledSet(current.extensions[column.key] ?? new Set(), value) } }))} onClear={() => setMemberFilters((current) => ({ ...current, extensions: { ...current.extensions, [column.key]: new Set() } }))} /></th>)}
@@ -1408,7 +1424,7 @@ function Groups({
               <tbody>{visibleGroupMembers.map((member) => {
                 const targetId = targets[member.id] ?? "";
                 return <tr key={member.id}>
-                  <td><button className="member-name-button" type="button" onClick={() => editMember(member)}><strong>{member.lastName} {member.firstName}</strong></button><small className="member-contact">{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "Sans contact")}</small></td>
+                  <td className="member-name-cell"><button className="member-name-button" type="button" onClick={() => editMember(member)}><strong>{member.lastName} {member.firstName}</strong></button><small className="member-contact">{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "Sans contact")}</small></td>
                   {categoriesEnabled && <td><CategoryBadge member={member} /></td>}
                   {memberColumns.map((column) => <td key={column.key}><ExtensionMemberCell column={column} member={member} /></td>)}
                   <td><GroupBadges groups={member.groups.filter((group) => group.id !== selectedGroup.id)} /></td>
