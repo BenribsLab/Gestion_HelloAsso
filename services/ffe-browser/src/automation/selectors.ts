@@ -16,6 +16,7 @@ export const ffeSelectors = {
   searchField: (page: Page) => page.getByRole("textbox").first(),
   rechercherButton: (page: Page) => page.getByRole("button", { name: /Rechercher/i }),
   addNewPersonButton: (page: Page) => page.getByRole("button", { name: /Ajout d'une nouvelle/i }),
+  birthDateField: (page: Page) => page.getByPlaceholder("JJ/MM/AAAA"),
 
   resultsTable: (page: Page) => page.getByRole("table"),
   // Borner les lignes au tableau de résultats : la page FFE contient d'autres composants qui

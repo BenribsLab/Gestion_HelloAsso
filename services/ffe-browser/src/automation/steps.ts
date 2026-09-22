@@ -100,7 +100,18 @@ export interface NewPersonInput {
 export async function fillNewPersonForm(page: Page, input: NewPersonInput): Promise<void> {
   await page.locator('input[name="nom"]').fill(input.lastName);
   await page.locator('input[name="prenom"]').fill(input.firstName);
-  await page.getByRole("textbox", { name: "__/__/____" }).fill(input.birthDateDisplay);
+  // Champ masqué piloté par un calendrier : fill() ne déclenche pas les événements clavier
+  // attendus par le site FFE. On reproduit une vraie saisie, puis on quitte le champ pour que le
+  // composant valide sa valeur.
+  const birthDateField = ffeSelectors.birthDateField(page);
+  await birthDateField.click();
+  await birthDateField.pressSequentially(input.birthDateDisplay);
+  await birthDateField.press("Tab");
+  const enteredBirthDate = (await birthDateField.inputValue()).replace(/\D/g, "");
+  const expectedBirthDate = input.birthDateDisplay.replace(/\D/g, "");
+  if (enteredBirthDate !== expectedBirthDate) {
+    throw new FfeUnexpectedPageError("La date de naissance n'a pas été enregistrée par le formulaire FFE.");
+  }
   if (input.email) await page.locator('input[name="adresse[mail]"]').fill(input.email);
   if (input.phone) await page.locator('input[name="adresse[tel]"]').fill(input.phone);
   if (input.mobile) await page.locator('input[name="adresse[mobile]"]').fill(input.mobile);
