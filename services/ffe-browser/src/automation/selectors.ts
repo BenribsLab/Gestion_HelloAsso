@@ -18,7 +18,9 @@ export const ffeSelectors = {
   addNewPersonButton: (page: Page) => page.getByRole("button", { name: /Ajout d'une nouvelle/i }),
 
   resultsTable: (page: Page) => page.getByRole("table"),
-  resultsRows: (page: Page) => page.getByRole("row")
+  // Borner les lignes au tableau de résultats : la page FFE contient d'autres composants qui
+  // peuvent eux aussi exposer un rôle "row" et décaler l'index de la personne sélectionnée.
+  resultsRows: (page: Page) => page.getByRole("table").getByRole("row")
 } as const;
 
 export const ffeUrls = {

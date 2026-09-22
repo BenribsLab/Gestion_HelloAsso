@@ -49,7 +49,12 @@ export async function selectPerson(page: Page, baseUrl: string, input: SelectPer
 
   await ffeSelectors.searchField(page).fill(`${input.lastName} ${input.firstName}`);
   await ffeSelectors.rechercherButton(page).click();
-  await page.waitForLoadState("networkidle");
+
+  // La recherche FFE met le tableau à jour en AJAX, sans navigation. waitForLoadState() pouvait
+  // donc rendre la main immédiatement et faire croire à tort qu'il n'y avait aucun résultat.
+  // La première ligne est l'en-tête ; attendre la seconde laisse le temps à une vraie réponse
+  // d'apparaître. L'absence réelle de résultat reste autorisée après le délai.
+  await ffeSelectors.resultsRows(page).nth(1).waitFor({ state: "visible", timeout: 15_000 }).catch(() => undefined);
 
   const candidates = await parseResultsList(page);
   const match = findBestMatch(input, candidates);
