@@ -45,7 +45,12 @@ const server = Fastify({
   trustProxy: config.trustProxy,
   bodyLimit: 15 * 1024 * 1024,
   requestTimeout: 30_000,
-  connectionTimeout: 10_000
+  // Certaines extensions pilotent un service distant avant de pouvoir répondre. Un délai
+  // d'inactivité de 10 s coupait alors la socket pendant que le traitement continuait, ce qui
+  // faisait renvoyer un 502 par le proxy malgré une opération réussie. Le proxy frontal porte
+  // déjà les limites applicables aux réponses longues ; requestTimeout conserve ici la
+  // protection sur la réception des requêtes.
+  connectionTimeout: 0
 });
 
 await server.register(cookie);
