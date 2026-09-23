@@ -1,6 +1,6 @@
-# Déploiement sécurisé sur `cey.benribs.fr`
+# Déploiement sécurisé sur votre domaine
 
-L'application doit être publiée uniquement sur `https://cey.benribs.fr`. L'API reste accessible par le chemin `/api` du même domaine et ne doit pas être exposée directement. Le fichier `deploy/Caddyfile` renvoie volontairement une réponse 404 sur `cey-api.benribs.fr`.
+L'application doit être publiée sur l'origine HTTPS configurée dans `APP_ORIGIN`. L'API reste accessible par le chemin `/api` du même domaine et ne doit pas être exposée directement.
 
 ## 1. Préparer le VPS
 
@@ -9,32 +9,33 @@ L'application doit être publiée uniquement sur `https://cey.benribs.fr`. L'API
 - Administrer le serveur avec un utilisateur nominatif, `sudo` et une clé SSH.
 - Désactiver la connexion SSH de `root` et l'authentification SSH par mot de passe.
 - N'ouvrir au pare-feu que `80/tcp`, `443/tcp` et le port SSH depuis les adresses nécessaires.
-- Installer Caddy sur l'hôte pour la terminaison HTTPS.
+- Configurer Apache ou un autre reverse proxy maintenu pour la terminaison HTTPS.
 
-Le DNS doit contenir un enregistrement `A` (et éventuellement `AAAA`) pour `cey.benribs.fr` vers le VPS. Le sous-domaine `cey-api.benribs.fr` n'est pas nécessaire.
+Le DNS doit contenir un enregistrement `A` (et éventuellement `AAAA`) pour le domaine choisi vers le VPS. Aucun sous-domaine distinct n'est nécessaire pour l'API.
 
 ## 2. Copier l'application
 
-Placer le dépôt dans un répertoire réservé, par exemple `/opt/cey-gestion`, appartenant à l'utilisateur de déploiement. Ne jamais copier le fichier `.env` local sur le serveur.
+Placer le dépôt dans un répertoire réservé, par exemple `/opt/gestion-utilisateurs`, appartenant à l'utilisateur de déploiement. Ne jamais copier le fichier `.env` local sur le serveur.
 
-Créer `/opt/cey-gestion/.env.production` avec les valeurs non secrètes :
+Créer `/opt/gestion-utilisateurs/.env.production` avec les valeurs non secrètes :
 
 ```dotenv
 POSTGRES_DB=gestion_utilisateurs
 POSTGRES_USER=gestion_app
+APP_ORIGIN=https://club.example.org
 APP_HOST_PORT=18473
 API_HOST_PORT=18474
 
 HELLOASSO_BASE_URL=https://api.helloasso.com
 HELLOASSO_CLIENT_ID=identifiant-fourni-par-helloasso
-HELLOASSO_ORGANIZATION_SLUG=cercle-d-escrime-de-yerres-cey
+HELLOASSO_ORGANIZATION_SLUG=identifiant-de-l-association
 
 SMTP_HOST=smtp.mail.ovh.net
 SMTP_PORT=587
 SMTP_SECURE=false
-SMTP_USER=no-reply@escrime-cey.fr
-SMTP_FROM_EMAIL=no-reply@escrime-cey.fr
-SMTP_FROM_NAME=Cercle d'Escrime de Yerres
+SMTP_USER=no-reply@example.org
+SMTP_FROM_EMAIL=no-reply@example.org
+SMTP_FROM_NAME=Nom de l'association
 SMTP_REPLY_TO=
 
 BOOTSTRAP_ADMIN_EMAIL=adresse-personnelle-du-responsable@example.fr
@@ -45,7 +46,7 @@ Protéger ce fichier avec des droits limités au propriétaire.
 
 ## 3. Créer les secrets
 
-Créer le répertoire `/opt/cey-gestion/secrets` et cinq fichiers lisibles uniquement par le propriétaire :
+Créer le répertoire `/opt/gestion-utilisateurs/secrets` et cinq fichiers lisibles uniquement par le propriétaire :
 
 - `postgres_password.txt` : mot de passe aléatoire long et unique ;
 - `helloasso_client_secret.txt` : secret fourni par HelloAsso ;
@@ -71,9 +72,9 @@ Au premier démarrage, l'administrateur défini dans `.env.production` est cré�
 
 Se connecter immédiatement, ouvrir le menu du compte et remplacer le mot de passe initial. Cette opération déconnecte les autres sessions. La connexion HelloAsso se configure ensuite dans l'assistant de l'instance ; le secret y est chiffré et n'est jamais renvoyé au navigateur.
 
-## 5. Activer HTTPS
+## 5. Activer HTTPS avec un reverse proxy
 
-Copier `deploy/Caddyfile` dans `/etc/caddy/Caddyfile`, vérifier la configuration puis recharger Caddy. Caddy récupère et renouvelle automatiquement le certificat TLS lorsque le DNS pointe vers le VPS et que les ports 80/443 sont accessibles.
+Configurer le site dans Apache/ISPConfig avec un certificat TLS valide et un reverse proxy vers `http://127.0.0.1:APP_HOST_PORT`. Conserver l'en-tête `Host` d'origine afin que l'application puisse vérifier correctement l'origine des requêtes.
 
 Le port applicatif défini par `APP_HOST_PORT` (`18473` par défaut) et le port API défini par `API_HOST_PORT` (`18474` par défaut) restent liés à `127.0.0.1`. PostgreSQL n'est publié sur aucun port de l'hôte. Avec ISPConfig, la directive Apache doit envoyer le trafic vers `http://127.0.0.1:18473`. Prévoir également `ProxyTimeout 300` : la reconnaissance OCR d'un lot de documents peut durer plus d'une minute lors de sa première exécution.
 

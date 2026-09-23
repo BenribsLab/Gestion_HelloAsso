@@ -13,7 +13,7 @@ services:
   api:
     environment:
       AUTH_ENABLED: "true"
-      APP_ORIGIN: https://cey.benribs.fr
+      APP_ORIGIN: ${APP_ORIGIN:?Renseignez APP_ORIGIN dans .env.production}
       TRUST_PROXY: "true"
       SESSION_IDLE_MINUTES: "30"
       SESSION_MAX_HOURS: "12"
@@ -28,7 +28,7 @@ services:
       SMTP_PASSWORD: ""
       SMTP_PASSWORD_FILE: /run/secrets/smtp_password
       BOOTSTRAP_ADMIN_EMAIL: ${BOOTSTRAP_ADMIN_EMAIL:?Renseignez BOOTSTRAP_ADMIN_EMAIL dans .env.production}
-      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrateur CEY}
+      BOOTSTRAP_ADMIN_NAME: ${BOOTSTRAP_ADMIN_NAME:-Administrateur}
       BOOTSTRAP_ADMIN_PASSWORD_FILE: /run/secrets/bootstrap_admin_password
       SETTINGS_ENCRYPTION_KEY: ""
       SETTINGS_ENCRYPTION_KEY_FILE: /run/secrets/settings_encryption_key
