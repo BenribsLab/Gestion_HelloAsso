@@ -22,14 +22,28 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
     clientSecret: "",
     organizationSlug: ""
   });
+  const [step, setStep] = useState(1);
 
   useEffect(() => {
     void Promise.all([api.setup(), api.helloassoSettings()])
-      .then(([setupData, settings]) => { applyData(setupData); applyConnection(settings); })
+      .then(([setupData, settings]) => {
+        applyData(setupData);
+        applyConnection(settings);
+        // On ouvre l'assistant sur la première étape encore à faire.
+        const done = stepsDone(setupData, settings.configured || helloassoConfigured);
+        setStep(Math.min(5, done.findIndex((value) => !value) + 1 || 5));
+      })
       .catch(showError);
   }, []);
 
   const selectedCampaignCount = data?.campaigns.filter((campaign) => campaign.selected).length ?? 0;
+  const done = data ? stepsDone(data, connection?.configured ?? helloassoConfigured) : [false, false, false, false, false];
+  const steps = ["Connexion", "Campagnes", "Champs", "Groupes", "Import"];
+  function goTo(next: number) {
+    setStep(next);
+    setMessage(null);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
   const visibleCampaigns = useMemo(
     () => data?.campaigns.filter((campaign) => showArchives || campaign.current) ?? [],
     [data, showArchives]
@@ -134,6 +148,7 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
       applyData(nextData);
       setGroupingPreview(null);
       setMessage(`${nextData.fields.length} champs distincts trouvés dans les inscriptions.`);
+      setStep(3);
     } catch (reason) { showError(reason); } finally { setBusy(null); }
   }
 
@@ -142,6 +157,7 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
     try {
       applyData(await api.selectFields([...fieldSelection], healthDocumentFieldKey || null));
       setMessage("Le modèle de données des adhérents est enregistré.");
+      setStep(4);
     } catch (reason) { showError(reason); } finally { setBusy(null); }
   }
 
@@ -160,6 +176,7 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
         ...(group.id ? { id: group.id } : {}), name: group.name.trim(), rules: group.rules
       }))));
       setMessage("Les règles de création des groupes sont enregistrées.");
+      setStep(5);
     } catch (reason) { showError(reason); } finally { setBusy(null); }
   }
 
@@ -213,18 +230,18 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
   }
 
   return <div className="setup-stack">
-    <section className="setup-progress" aria-label="Étapes de configuration">
-      <ProgressStep number="1" label="Connexion" done={connection?.configured ?? helloassoConfigured} />
-      <ProgressStep number="2" label="Campagnes" done={selectedCampaignCount > 0} />
-      <ProgressStep number="3" label="Champs" done={Boolean(data?.completedAt)} />
-      <ProgressStep number="4" label="Groupes" done={Boolean(data?.groupsConfiguredAt)} />
-      <ProgressStep number="5" label="Import" done={data?.lastSync?.status === "succeeded"} />
-    </section>
+    <ol className="stepper" aria-label="Étapes de configuration">
+      {steps.map((label, index) => <li key={label} className={done[index] ? "done" : undefined}>
+        <button type="button" aria-current={step === index + 1 ? "step" : undefined} onClick={() => goTo(index + 1)}>
+          <span className="step-dot">{done[index] ? "✓" : index + 1}</span><span>{label}</span>
+        </button>
+      </li>)}
+    </ol>
 
     {error && <div className="alert error">{error}</div>}
     {message && <div className="alert success">{message}</div>}
 
-    <section className="panel setup-section">
+    {step === 1 && <section className="panel setup-section">
       <StepHeading number="1" title="Connexion à HelloAsso" />
       <div className="connection-line">
         <span className={(connection?.configured ?? helloassoConfigured) ? "status-dot ok" : "status-dot"} />
@@ -245,9 +262,9 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
           {connection.source === "database" && <button className="danger-link" type="button" disabled={busy !== null} onClick={() => void resetConnection()}>{busy === "connection-reset" ? "Suppression…" : "Revenir à la configuration serveur"}</button>}
         </div>
       </div>}
-    </section>
+    </section>}
 
-    <section className="panel setup-section">
+    {step === 2 && <section className="panel setup-section">
       <div className="setup-section-header">
         <StepHeading number="2" title="Choisir les campagnes d’adhésion" />
         <button className="secondary" disabled={!(connection?.configured ?? helloassoConfigured) || busy !== null} onClick={() => void discover()} type="button">
@@ -262,9 +279,10 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
         <button className="link-button" type="button" onClick={() => setShowArchives((value) => !value)}>{showArchives ? "Masquer les anciennes campagnes" : `Voir les campagnes archivées (${data.campaigns.filter((campaign) => !campaign.current).length})`}</button>
         <div className="setup-actions"><span>{campaignSelection.size} campagne{campaignSelection.size > 1 ? "s" : ""} sélectionnée{campaignSelection.size > 1 ? "s" : ""}</span><button className="primary" disabled={campaignSelection.size === 0 || busy !== null} onClick={() => void analyzeCampaigns()} type="button">{busy === "campaigns" ? "Analyse des inscriptions…" : "Valider et analyser les champs"}</button></div>
       </>}
-    </section>
+    </section>}
 
-    <section className={`panel setup-section ${selectedCampaignCount === 0 ? "disabled-section" : ""}`}>
+    {step === 3 && <section className="panel setup-section">
+      {selectedCampaignCount === 0 && <p className="empty-inline">Choisissez d’abord au moins une campagne à l’étape 2.</p>}
       <StepHeading number="3" title="Choisir les données à conserver" />
       <p className="muted setup-hint">Les champs de base sont indispensables. Les champs supplémentaires ne seront enregistrés que si vous les sélectionnez.</p>
       <div className="core-fields">{data?.coreFields.map((field) => <span key={field.key}>✓ {field.label}</span>)}</div>
@@ -274,10 +292,11 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
         {data.fields.some((field) => field.type === "File" && fieldSelection.has(field.key)) && <label className="health-document-choice">Champ contenant le certificat médical ou l’attestation de santé<select value={healthDocumentFieldKey} onChange={(event) => setHealthDocumentFieldKey(event.target.value)}><option value="">Documents génériques uniquement (aucune reconnaissance)</option>{data.fields.filter((field) => field.type === "File" && fieldSelection.has(field.key)).map((field) => <option key={field.key} value={field.key}>{field.label}</option>)}</select><small>Le champ santé détecté par son intitulé est sélectionné automatiquement. Vous pouvez modifier ce choix.</small></label>}
         <div className="setup-actions"><span>{fieldSelection.size} champ{fieldSelection.size > 1 ? "s" : ""} supplémentaire{fieldSelection.size > 1 ? "s" : ""}</span><button className="primary" disabled={busy !== null} onClick={() => void saveFields()} type="button">{busy === "fields" ? "Enregistrement…" : "Enregistrer ce modèle"}</button></div>
       </> : selectedCampaignCount > 0 ? <p className="empty-inline">Aucun champ n’a été trouvé. Une campagne doit contenir au moins une inscription pour permettre cette analyse.</p> : null}
-    </section>
+    </section>}
 
-    <section className={`panel setup-section ${!data?.completedAt ? "disabled-section" : ""}`}>
+    {step === 4 && <section className="panel setup-section">
       <StepHeading number="4" title="Composer les groupes" />
+      {!data?.completedAt && <p className="empty-inline">Enregistrez d’abord le modèle de champs à l’étape 3.</p>}
       <p className="muted setup-hint">Choisissez une ou plusieurs sources, puis associez autant de valeurs que nécessaire à un nom de groupe. Une correspondance suffit pour intégrer l’adhérent au groupe.</p>
       <div className="grouping-example">Exemple : « M9 Débutant » ou « M11 Débutant » → groupe « M9 M11 débutant ». Les variantes de paiement en 1 ou 3 fois sont automatiquement réunies.</div>
       <div className="grouping-source-list">{groupingSources.map((source) => <label className="source-chip" key={source.key}><input type="checkbox" checked={groupingSourceSelection.has(source.key)} onChange={() => toggleGroupingSource(source.key)} /><span><strong>{source.label}</strong><small>{fieldTypeLabel(source.type)}</small></span></label>)}</div>
@@ -295,17 +314,28 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
         </article>)}</div>}
         <div className="setup-actions"><span>{groupDrafts.length} groupe{groupDrafts.length > 1 ? "s" : ""} préparé{groupDrafts.length > 1 ? "s" : ""}</span><button className="primary" disabled={!groupsAreValid || busy !== null} onClick={() => void saveGroups()} type="button">{busy === "groups" ? "Enregistrement…" : "Enregistrer les groupes"}</button></div>
       </div>}
-    </section>
+    </section>}
 
-    <section className={`panel setup-section import-section ${!data?.completedAt || !data?.groupsConfiguredAt ? "disabled-section" : ""}`}>
+    {step === 5 && <section className="panel setup-section import-section">
       <div><StepHeading number="5" title="Créer ou actualiser la base" /><p className="muted setup-hint">Les inscriptions valides seront ajoutées ou mises à jour et placées dans les groupes configurés. Les inscriptions annulées ne deviennent pas des adhérents actifs.</p>{data?.lastSync && <p className="last-sync">Dernier import : {data.lastSync.importedCount} adhérents · {data.lastSync.finishedAt ? formatDateTime(data.lastSync.finishedAt) : data.lastSync.status}</p>}</div>
       <button className="primary import-button" disabled={!data?.completedAt || !data?.groupsConfiguredAt || busy !== null} onClick={() => void runImport()} type="button">{busy === "import" ? "Import en cours…" : "Importer les adhérents"}</button>
-    </section>
+    </section>}
+
+    <nav className="setup-nav" aria-label="Navigation de l’assistant">
+      <button className="secondary" type="button" disabled={step === 1} onClick={() => goTo(step - 1)}>‹ {step > 1 ? steps[step - 2] : "Précédent"}</button>
+      {step < 5 && <button className={done[step - 1] ? "primary" : "secondary"} type="button" onClick={() => goTo(step + 1)}>{steps[step]} ›</button>}
+    </nav>
   </div>;
 }
 
-function ProgressStep({ number, label, done }: { number: string; label: string; done: boolean }) {
-  return <div className={done ? "progress-step done" : "progress-step"}><span>{done ? "✓" : number}</span><strong>{label}</strong></div>;
+function stepsDone(data: SetupData, connected: boolean) {
+  return [
+    connected,
+    data.campaigns.some((campaign) => campaign.selected),
+    Boolean(data.completedAt),
+    Boolean(data.groupsConfiguredAt),
+    data.lastSync?.status === "succeeded"
+  ];
 }
 function StepHeading({ number, title }: { number: string; title: string }) {
   return <div className="step-heading"><span>{number}</span><div><p className="eyebrow">Étape {number}</p><h2>{title}</h2></div></div>;

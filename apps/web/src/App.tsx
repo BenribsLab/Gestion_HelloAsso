@@ -4,6 +4,7 @@ import { Setup } from "./Setup";
 import { uiContracts, type RegisteredDocumentPanel, type RegisteredGroupPanel, type RegisteredMemberAction, type RegisteredMemberColumn, type RegisteredMemberDetailPanel } from "./extension-contracts";
 import { CategoryBadge, memberCategoryLabel } from "./extensions/fencing-categories";
 import { loadExtensionBundles } from "./extension-runtime";
+import { NavIcon } from "./icons";
 
 type CoreView = "dashboard" | "members" | "groups" | "setup" | "extensions";
 /** Une vue apportée par un module est identifiée par son identifiant d'extension. */
@@ -307,44 +308,54 @@ export function App() {
     }
   }
 
-  if (!authReady) return <div className="app-loading-screen"><span className="brand-mark">GU</span><p>Ouverture sécurisée…</p></div>;
+  if (!authReady) return <div className="app-loading-screen"><span className="brand-mark">g</span><p>Ouverture sécurisée…</p></div>;
   if (!authUser) return <LoginScreen onLogin={login} />;
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand">
-          <span className="brand-mark">GU</span>
+          <span className="brand-mark">g</span>
           <div>
-            <strong>Gestion club</strong>
-            <small>Adhérents & groupes</small>
+            <strong>Gestion Asso</strong>
+            <small>Espace du club</small>
           </div>
         </div>
         <nav aria-label="Navigation principale">
-          <NavButton active={view === "dashboard"} onClick={() => navigate("dashboard")}>
-            Vue d'ensemble
-          </NavButton>
-          <NavButton active={view === "members"} onClick={() => navigate("members")}>
-            Adhérents
-          </NavButton>
-          {uiContracts.listViews(extensionEnabled).map((registration) => (
-            <NavButton
-              key={registration.extensionId}
-              active={view === `ext:${registration.extensionId}`}
-              onClick={() => navigate(`ext:${registration.extensionId}`)}
-            >
-              {registration.label}
+          <div className="nav-group">
+            <p className="nav-label">Club</p>
+            <NavButton icon="dashboard" active={view === "dashboard"} onClick={() => navigate("dashboard")}>
+              Vue d'ensemble
             </NavButton>
-          ))}
-          <NavButton active={view === "groups"} onClick={() => navigate("groups")}>
-            Groupes
-          </NavButton>
-          <NavButton active={view === "setup"} onClick={() => navigate("setup")}>
-            Configuration
-          </NavButton>
-          <NavButton active={view === "extensions"} onClick={() => navigate("extensions")}>
-            Extensions
-          </NavButton>
+            <NavButton icon="members" active={view === "members"} onClick={() => navigate("members")}>
+              Adhérents
+            </NavButton>
+            <NavButton icon="groups" active={view === "groups"} onClick={() => navigate("groups")}>
+              Groupes
+            </NavButton>
+          </div>
+          {uiContracts.listViews(extensionEnabled).length > 0 && <div className="nav-group">
+            <p className="nav-label">Modules</p>
+            {uiContracts.listViews(extensionEnabled).map((registration) => (
+              <NavButton
+                key={registration.extensionId}
+                icon={registration.extensionId}
+                active={view === `ext:${registration.extensionId}`}
+                onClick={() => navigate(`ext:${registration.extensionId}`)}
+              >
+                {registration.label}
+              </NavButton>
+            ))}
+          </div>}
+          <div className="nav-group">
+            <p className="nav-label">Réglages</p>
+            <NavButton icon="setup" active={view === "setup"} onClick={() => navigate("setup")}>
+              Configuration
+            </NavButton>
+            <NavButton icon="extensions" active={view === "extensions"} onClick={() => navigate("extensions")}>
+              Extensions
+            </NavButton>
+          </div>
         </nav>
         <div className="local-badge"><span /> {authEnabled ? "Accès protégé" : "Mode local"}</div>
       </aside>
@@ -452,16 +463,19 @@ export function App() {
 }
 
 function NavButton({
+  icon,
   active,
   onClick,
   children
 }: {
+  icon: string;
   active: boolean;
   onClick: () => void;
   children: string;
 }) {
   return (
-    <button className={active ? "active" : ""} onClick={onClick} type="button">
+    <button className={active ? "active" : ""} aria-current={active ? "page" : undefined} onClick={onClick} type="button">
+      <NavIcon name={icon} />
       {children}
     </button>
   );
@@ -487,7 +501,7 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
 
   return <main className="login-screen">
     <section className="login-card">
-      <div className="login-brand"><span className="brand-mark">GU</span><div><strong>Gestion club</strong><small>Cercle d'Escrime de Yerres</small></div></div>
+      <div className="login-brand"><span className="brand-mark">g</span><div><strong>Gestion Asso</strong><small>Cercle d'Escrime de Yerres</small></div></div>
       <div><p className="eyebrow">Espace privé</p><h1>Connexion</h1><p className="muted">Accès réservé aux responsables autorisés du club.</p></div>
       {error && <div className="alert error" role="alert">{error}</div>}
       <form onSubmit={submit}>
@@ -587,38 +601,49 @@ function userInitials(user: AuthUser) {
   return (parts.length > 1 ? `${parts[0]?.[0] ?? ""}${parts.at(-1)?.[0] ?? ""}` : user.displayName.slice(0, 2)).toLocaleUpperCase("fr");
 }
 
+/**
+ * Fenêtre intégrée à la page, sur l'élément <dialog> natif : piégeage du focus, touche Échap et
+ * fond assombri sont fournis par le navigateur. Rien à voir avec une fenêtre surgissante, donc
+ * jamais bloquée. `variant="drawer"` l'ouvre en panneau latéral pour garder la liste visible.
+ */
 function Modal({
   title,
   eyebrow,
   size = "medium",
+  variant = "dialog",
   onClose,
   children
 }: {
   title: string;
   eyebrow?: string;
   size?: "medium" | "large" | "wide";
+  variant?: "dialog" | "drawer";
   onClose: () => void;
   children: ReactNode;
 }) {
-  const overlay = useRef<HTMLDivElement>(null);
-  useEffect(() => overlay.current?.focus(), []);
+  const dialog = useRef<HTMLDialogElement>(null);
+  const close = useRef(onClose);
+  close.current = onClose;
 
-  return <div
-    className="modal-overlay"
-    role="presentation"
-    tabIndex={-1}
-    ref={overlay}
-    onKeyDown={(event) => { if (event.key === "Escape") onClose(); }}
-    onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}
+  useEffect(() => {
+    const node = dialog.current;
+    if (node && !node.open) node.showModal();
+    return () => node?.close();
+  }, []);
+
+  return <dialog
+    ref={dialog}
+    className={`gu-dialog gu-dialog-${size}${variant === "drawer" ? " gu-drawer" : ""}`}
+    aria-label={title}
+    onCancel={(event) => { event.preventDefault(); close.current(); }}
+    onMouseDown={(event) => { if (event.target === event.currentTarget) close.current(); }}
   >
-    <section className={`modal-window modal-${size}`} role="dialog" aria-modal="true" aria-label={title}>
-      <header className="modal-header">
-        <div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h2>{title}</h2></div>
-        <button className="modal-close" type="button" aria-label="Fermer" onClick={onClose}>×</button>
-      </header>
-      <div className="modal-body">{children}</div>
-    </section>
-  </div>;
+    <header className="gu-dialog-header">
+      <div>{eyebrow && <p className="eyebrow">{eyebrow}</p>}<h2>{title}</h2></div>
+      <button className="gu-dialog-close" type="button" aria-label="Fermer" onClick={() => close.current()}>×</button>
+    </header>
+    <div className="gu-dialog-body">{children}</div>
+  </dialog>;
 }
 
 function ListSearch({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
@@ -636,9 +661,38 @@ function ChoiceFilter({ label, options, selection, onToggle, onClear }: {
   onToggle: (value: string) => void;
   onClear: () => void;
 }) {
-  return <details className="choice-filter">
+  const details = useRef<HTMLDetailsElement>(null);
+  const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
+
+  // Le menu est positionné par rapport à la fenêtre : il n'est jamais rogné par le défilement
+  // horizontal du tableau. Il se referme au défilement ou au clic ailleurs.
+  useEffect(() => {
+    if (!position) return;
+    const closeMenu = (event: Event) => {
+      if (event.type === "scroll" && event.target instanceof Node && details.current?.contains(event.target)) return;
+      if (event.type === "mousedown" && event.target instanceof Node && details.current?.contains(event.target)) return;
+      if (details.current) details.current.open = false;
+    };
+    window.addEventListener("scroll", closeMenu, true);
+    window.addEventListener("resize", closeMenu);
+    document.addEventListener("mousedown", closeMenu);
+    return () => {
+      window.removeEventListener("scroll", closeMenu, true);
+      window.removeEventListener("resize", closeMenu);
+      document.removeEventListener("mousedown", closeMenu);
+    };
+  }, [position]);
+
+  function toggled() {
+    const node = details.current;
+    if (!node?.open) { setPosition(null); return; }
+    const rect = node.getBoundingClientRect();
+    setPosition({ top: rect.bottom + 6, left: Math.max(12, Math.min(rect.left, window.innerWidth - 252)) });
+  }
+
+  return <details className="choice-filter" ref={details} onToggle={toggled}>
     <summary title={`Filtrer : ${label}`}><span>{selection.size === 0 ? "Tous" : `${selection.size} choisi${selection.size > 1 ? "s" : ""}`}</span><span aria-hidden="true">⌄</span></summary>
-    <div className="choice-filter-menu">
+    <div className="choice-filter-menu" style={position ?? undefined}>
       <div className="choice-filter-heading"><strong>{label}</strong>{selection.size > 0 && <button type="button" onClick={onClear}>Tout effacer</button>}</div>
       <div className="choice-filter-options">{options.map((option) => <label key={option}><input type="checkbox" checked={selection.has(option)} onChange={() => onToggle(option)} /><span>{option}</span></label>)}</div>
     </div>
@@ -865,6 +919,14 @@ function StatCard({ value, label, hint }: { value: number | string; label: strin
   );
 }
 
+const licenseStatusLabels: Record<Extension["licenseStatus"], string> = {
+  local: "locale",
+  valid: "valide",
+  grace: "en période de grâce",
+  expired: "expirée",
+  unavailable: "indisponible"
+};
+
 function Extensions({ items, configuration, onChanged }: {
   items: Extension[];
   configuration: ExtensionConfiguration;
@@ -875,6 +937,7 @@ function Extensions({ items, configuration, onChanged }: {
   const [installationMessage, setInstallationMessage] = useState<string | null>(null);
   const [installations, setInstallations] = useState<ExtensionInstallation[]>([]);
   const [rollbacks, setRollbacks] = useState<Record<string, Array<{ directory: string; version: string }>>>({});
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     void Promise.all([
@@ -925,25 +988,38 @@ function Extensions({ items, configuration, onChanged }: {
     finally { setBusyId(null); }
   }
 
-  return <div className="extensions-page page-stack">
+  const activeCount = items.filter((extension) => extension.enabled).length;
+
+  return <div className="extensions-page">
     <section className="panel extension-intro">
-      <div><p className="eyebrow">Architecture modulaire</p><h2>Extensions installées</h2><p className="muted">Chaque fonctionnalité peut être coupée sans supprimer ses données. Les modules actuellement livrés avec l’application sont autorisés localement.</p></div>
-      <div className={`central-server-status ${configuration.centralServerConfigured ? "configured" : "planned"}`}><strong>{configuration.centralServerConfigured ? "Serveur central configuré" : "Serveur central prévu"}</strong><span>{configuration.centralServerConfigured ? "Catalogue et licence disponibles" : `Mode local · grâce hors ligne prévue : ${configuration.offlineGraceDays} jours`}</span></div>
+      <div><p className="eyebrow">Architecture modulaire</p><h2>{activeCount} extension{activeCount > 1 ? "s" : ""} active{activeCount > 1 ? "s" : ""} sur {items.length}</h2><p className="muted">Désactiver une extension coupe son menu et son API, sans jamais supprimer ses données.</p></div>
+      <div className="heading-actions">
+        <button className="secondary" type="button" disabled={installations.length === 0} onClick={() => setHistoryOpen(true)}><NavIcon name="history" size={16} />Historique{installations.length > 0 ? ` (${Math.min(installations.length, 20)})` : ""}</button>
+        <label className="primary file-button"><NavIcon name="upload" size={16} />{busyId === "install" ? "Vérification…" : "Installer un .gu-plugin"}<input type="file" accept=".gu-plugin,application/zip" disabled={busyId !== null} onChange={(event) => void install(event.currentTarget.files?.[0])} /></label>
+      </div>
     </section>
     {configuration.allowUnsigned && <div className="alert error">Le mode développeur autorisant les paquets non signés est actif. Ne l’utilisez jamais en production.</div>}
     {error && <div className="alert error">{error}</div>}
-    {installationMessage && <div className="alert success-message">{installationMessage}</div>}
+    {installationMessage && <div className="alert success">{installationMessage}</div>}
     <section className="extension-grid" aria-label="Extensions installées">
       {items.map((extension) => <article className={`panel extension-card ${extension.enabled ? "enabled" : "disabled"}`} key={extension.id}>
         <div className="extension-card-heading"><div><span className="extension-state-dot" /><span>{extension.enabled ? "Active" : "Inactive"}</span></div><small>v{extension.version}</small></div>
-        <div><h2>{extension.name}</h2><p>{extension.description}</p></div>
-        <dl><div><dt>Origine</dt><dd>{extension.source === "bundled" ? "Livrée avec l’application" : extension.source === "central" ? "Catalogue central" : "Paquet local"}</dd></div><div><dt>Licence</dt><dd>{extension.licenseStatus === "local" ? "Locale" : extension.licenseStatus}</dd></div></dl>
-        {extension.optionalDependencies.length > 0 && <small className="extension-dependencies">Intégrations facultatives : {extension.optionalDependencies.join(", ")}</small>}
-        <div className="template-actions"><button className={extension.enabled ? "secondary" : "primary"} type="button" disabled={busyId !== null} onClick={() => void toggle(extension)}>{busyId === extension.id ? "Mise à jour…" : extension.enabled ? "Désactiver" : "Activer"}</button>{(rollbacks[extension.id]?.length ?? 0) > 0 && <button className="secondary" type="button" disabled={busyId !== null} onClick={() => void rollback(extension)}>Revenir à v{rollbacks[extension.id]![0]!.version}</button>}</div>
+        <div><h2>{extension.name}</h2><p title={extension.description}>{extension.description}</p></div>
+        <div className="extension-meta">
+          <span className="badge">{extension.source === "bundled" ? "Livrée avec l’application" : extension.source === "central" ? "Catalogue central" : "Paquet local"}</span>
+          <span className={extension.licenseStatus === "local" || extension.licenseStatus === "valid" ? "badge ok" : "badge warn"}>Licence {licenseStatusLabels[extension.licenseStatus]}</span>
+        </div>
+        {extension.optionalDependencies.length > 0 && <small className="extension-dependencies">Fonctionne avec : {extension.optionalDependencies.join(", ")}</small>}
+        <div className="template-actions"><button className={`${extension.enabled ? "secondary" : "primary"} compact-button`} type="button" disabled={busyId !== null} onClick={() => void toggle(extension)}>{busyId === extension.id ? "Mise à jour…" : extension.enabled ? "Désactiver" : "Activer"}</button>{(rollbacks[extension.id]?.length ?? 0) > 0 && <button className="link-button" type="button" disabled={busyId !== null} onClick={() => void rollback(extension)}>Revenir à v{rollbacks[extension.id]![0]!.version}</button>}</div>
       </article>)}
     </section>
-    <section className="panel extension-catalog-placeholder"><div><p className="eyebrow">Paquet autonome</p><h2>Installer un fichier .gu-plugin</h2><p className="muted">Le paquet est contrôlé, signé, installé atomiquement puis chargé après le redémarrage automatique de l’API.</p></div><label className="primary file-button">{busyId === "install" ? "Vérification…" : "Choisir et installer"}<input type="file" accept=".gu-plugin,application/zip" disabled={busyId !== null} onChange={(event) => void install(event.currentTarget.files?.[0])} /></label></section>
-    {installations.length > 0 && <section className="panel"><div className="section-heading"><div><p className="eyebrow">Audit technique</p><h2>Dernières installations</h2></div></div><div className="message-history-list">{installations.slice(0, 20).map((entry) => <article key={entry.id}><div><strong>{entry.extensionId ?? "Paquet refusé"}{entry.version ? ` · v${entry.version}` : ""}</strong><p>{entry.outcome === "installed" ? "Installation réussie" : entry.outcome === "rolled_back" ? "Retour arrière" : entry.message ?? "Échec de l’installation"}</p></div><time>{formatDateTime(entry.createdAt)}</time></article>)}</div></section>}
+    <p className="muted">Serveur central : {configuration.centralServerConfigured ? "configuré, catalogue et licences disponibles." : `non configuré (mode local, grâce hors ligne de ${configuration.offlineGraceDays} jours).`}</p>
+    {historyOpen && <Modal title="Dernières installations" eyebrow="Audit technique" variant="drawer" onClose={() => setHistoryOpen(false)}>
+      <ul className="list-rows">{installations.slice(0, 20).map((entry) => <li key={entry.id}>
+        <div><strong>{entry.extensionId ?? "Paquet refusé"}{entry.version ? ` · v${entry.version}` : ""}</strong><p>{entry.outcome === "installed" ? "Installation réussie" : entry.outcome === "rolled_back" ? "Retour arrière" : entry.message ?? "Échec de l’installation"}</p></div>
+        <time dateTime={entry.createdAt}>{formatDateTime(entry.createdAt)}</time>
+      </li>)}</ul>
+    </Modal>}
   </div>;
 }
 
@@ -1146,8 +1222,10 @@ function Members({
         />
       ) : (
         <>
-          <ListSearch value={search} onChange={setSearch} placeholder="Rechercher un nom, un prénom, un groupe…" />
-          <Pagination page={page} pageSize={pageSize} total={filteredMembers.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
+          <div className="list-toolbar">
+            <ListSearch value={search} onChange={setSearch} placeholder="Rechercher un nom, un prénom, un groupe…" />
+            <Pagination page={page} pageSize={pageSize} total={filteredMembers.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
+          </div>
           <div className="table-wrap data-table-wrap">
           <table className="data-table">
             <colgroup>
@@ -1238,6 +1316,7 @@ function Members({
         eyebrow="Fiche adhérent"
         onClose={() => setEditingMemberId(null)}
         size="large"
+        variant="drawer"
       >
         <MemberEditor
           member={editingMember}
@@ -1707,7 +1786,7 @@ function Groups({
         </form>
       </Modal>}
 
-      {selectedGroup && <Modal title={selectedGroup.name} eyebrow="Groupe" onClose={() => onSelectGroup("")} size="wide">
+      {selectedGroup && <Modal title={selectedGroup.name} eyebrow="Groupe" onClose={() => onSelectGroup("")} size="wide" variant="drawer">
         <div className="group-modal-summary">
           <div><span className="group-avatar large">{groupInitials(selectedGroup.name)}</span><div><strong>{groupMembers.length} adhérent{groupMembers.length > 1 ? "s" : ""}</strong><p>{selectedGroup.description || dynamicGroupDescription(selectedGroup, groupCriteria) || "Sans description"}</p></div></div>
           {selectedGroup.dynamicRule && <span className="rule-chip">{dynamicGroupDescription(selectedGroup, groupCriteria)}</span>}
@@ -1716,8 +1795,10 @@ function Groups({
 
         {groupTab === "members" && <div className="group-members-view">
           {groupMembers.length === 0 ? <EmptyState title="Groupe vide" text="Aucun adhérent n'appartient actuellement à ce groupe." /> : <>
-            <ListSearch value={memberSearch} onChange={setMemberSearch} placeholder="Rechercher dans ce groupe…" />
-            <Pagination page={memberPage} pageSize={memberPageSize} total={filteredGroupMembers.length} onPageChange={setMemberPage} onPageSizeChange={setMemberPageSize} />
+            <div className="list-toolbar">
+              <ListSearch value={memberSearch} onChange={setMemberSearch} placeholder="Rechercher dans ce groupe…" />
+              <Pagination page={memberPage} pageSize={memberPageSize} total={filteredGroupMembers.length} onPageChange={setMemberPage} onPageSizeChange={setMemberPageSize} />
+            </div>
             <div className="table-wrap modal-table-wrap"><table className="data-table">
               <colgroup>
                 <col className="group-member-name-column" />
@@ -1759,7 +1840,7 @@ function Groups({
 
       {editingMemberId && editingDraft && (() => {
         const member = members.find((item) => item.id === editingMemberId);
-        return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onDelete={() => void onDeleteMember(member).then((deleted) => { if (deleted) setEditingMemberId(null); })} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onDocumentsChanged={onDocumentsChanged} onMemberAction={onMemberAction} memberActions={memberActions} documentPanels={documentPanels} memberDetailPanels={memberDetailPanels} /></Modal> : null;
+        return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large" variant="drawer"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onDelete={() => void onDeleteMember(member).then((deleted) => { if (deleted) setEditingMemberId(null); })} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onDocumentsChanged={onDocumentsChanged} onMemberAction={onMemberAction} memberActions={memberActions} documentPanels={documentPanels} memberDetailPanels={memberDetailPanels} /></Modal> : null;
       })()}
     </div>
   );
