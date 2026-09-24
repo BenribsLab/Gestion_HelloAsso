@@ -128,6 +128,14 @@ th { color: #71807e; font-size: 13px; }
 .member-field-list { display: grid; gap: 8px; max-height: 280px; overflow: auto; }
 .member-field-list > div { display: flex; justify-content: space-between; gap: 18px; padding: 11px 13px; border: 1px solid #e4e9e7; border-radius: 10px; background: #f8faf8; }
 .member-field-list span { color: #71807e; font-size: 13px; text-align: right; }
+.field-input-configuration { display: grid !important; gap: 10px; }
+.field-input-configuration > div:first-child { display: flex; justify-content: space-between; gap: 18px; }
+.field-input-controls { display: grid; grid-template-columns: minmax(140px, .7fr) minmax(200px, 1.5fr) auto; align-items: end; gap: 8px; }
+.choice-with-other { display: grid; gap: 7px; }
+.module-fields-section { display: grid; gap: 13px; padding: 15px; border: 1px solid #dfe6db; border-radius: 12px; background: #f8faf4; }
+.module-fields-section summary { cursor: pointer; color: #244347; font-weight: 800; }
+.module-fields-section > .muted { margin: 0; }
+.custom-fields-grid label > small { color: #71807e; font-weight: 400; line-height: 1.35; }
 .categories-page { display: grid; gap: 22px; }
 .category-settings { display: flex; align-items: end; justify-content: space-between; gap: 28px; }
 .category-settings > div { max-width: 680px; }
@@ -422,6 +430,7 @@ th { color: #71807e; font-size: 13px; }
   .editor-actions-spacer { display: none; }
   .group-detail-actions { width: 100%; justify-content: space-between; }
   .schedule-row, .attendance-form, .holiday-list, .member-fields, .custom-fields-grid, .helloasso-settings-grid { grid-template-columns: 1fr; }
+  .field-input-controls { grid-template-columns: 1fr; }
   .subsection-heading, .print-toolbar { align-items: stretch; flex-direction: column; }
   .smtp-status, .recipient-preview { align-items: stretch; flex-direction: column; }
   .category-settings, .category-settings form { align-items: stretch; flex-direction: column; }

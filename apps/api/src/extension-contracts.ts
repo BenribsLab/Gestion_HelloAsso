@@ -101,6 +101,18 @@ export interface HealthDocumentProvider {
   }>;
 }
 
+export type MemberFieldRequirement = {
+  extensionId: string;
+  /** Clé fonctionnelle stable, partagée entre modules lorsqu'ils utilisent la même donnée. */
+  key: string;
+  label: string;
+  type: "Text" | "Email" | "Phone" | "Date" | "YesNo";
+  description: string;
+  source:
+    | { kind: "payer"; property: "firstName" | "lastName" | "email" | "phone" }
+    | { kind: "helloasso-field"; labelPatterns: string[] };
+};
+
 /**
  * Contrats déclarés par les extensions et consultés par le noyau. Chaque extension
  * s'enregistre ici au démarrage ; le noyau ne référence plus son identifiant en dur.
@@ -111,6 +123,17 @@ export class ExtensionContracts {
   private groupScheduleProvider: GroupScheduleProvider | null = null;
   private healthDocumentProvider: HealthDocumentProvider | null = null;
   private readonly groupCriterionProviders = new Map<string, GroupCriterionProvider>();
+  private readonly memberFieldRequirements = new Map<string, MemberFieldRequirement[]>();
+
+  registerMemberFieldRequirements(extensionId: string, requirements: Omit<MemberFieldRequirement, "extensionId">[]) {
+    this.memberFieldRequirements.set(extensionId, requirements.map((requirement) => ({ ...requirement, extensionId })));
+  }
+
+  activeMemberFieldRequirements(isExtensionEnabled: (extensionId: string) => boolean) {
+    return [...this.memberFieldRequirements.entries()]
+      .filter(([extensionId]) => isExtensionEnabled(extensionId))
+      .flatMap(([, requirements]) => requirements);
+  }
 
   registerGroupCriterionProvider<TContext>(provider: GroupCriterionProvider<TContext>) {
     this.groupCriterionProviders.set(provider.criterion.key, provider as GroupCriterionProvider);

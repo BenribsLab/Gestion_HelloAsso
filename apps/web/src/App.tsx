@@ -1,5 +1,5 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type AuthUser, type DashboardData, type Extension, type ExtensionConfiguration, type ExtensionInstallation, type Group, type GroupCriterion, type ManagedUser, type Member, type MemberField } from "./api";
+import { api, type AuthUser, type DashboardData, type Extension, type ExtensionConfiguration, type ExtensionInstallation, type Group, type GroupCriterion, type ManagedUser, type Member, type MemberField, type ModuleField } from "./api";
 import { Setup } from "./Setup";
 import { uiContracts, type RegisteredDocumentPanel, type RegisteredGroupPanel, type RegisteredMemberAction, type RegisteredMemberColumn, type RegisteredMemberDetailPanel } from "./extension-contracts";
 import { CategoryBadge, memberCategoryLabel } from "./extensions/fencing-categories";
@@ -13,6 +13,7 @@ type MemberDraft = {
   lastName: string;
   email: string;
   customValues: Record<string, string>;
+  moduleValues: Record<string, string>;
 };
 
 export function App() {
@@ -20,6 +21,7 @@ export function App() {
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
   const [memberFields, setMemberFields] = useState<MemberField[]>([]);
+  const [moduleFields, setModuleFields] = useState<ModuleField[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupCriteria, setGroupCriteria] = useState<GroupCriterion[]>([]);
   const [extensions, setExtensions] = useState<Extension[]>([]);
@@ -59,6 +61,7 @@ export function App() {
       setDashboard(dashboardData);
       setMembers(memberData.items);
       setMemberFields(memberData.fields);
+      setModuleFields(memberData.moduleFields);
       setGroups(groupData.items);
       setGroupCriteria(criteriaData.items);
     } catch (loadError) {
@@ -201,6 +204,7 @@ export function App() {
     lastName: string;
     email: string;
     profileData: Record<string, string | number | boolean | null>;
+    moduleData: Record<string, string | number | boolean | null>;
     groupIds: string[];
   }) {
     setError(null);
@@ -232,7 +236,7 @@ export function App() {
     }
   }
 
-  async function createMemberField(input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" }) {
+  async function createMemberField(input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "ChoiceList" | "File"; options?: string[] }) {
     setError(null);
     try {
       await api.createMemberField(input);
@@ -240,6 +244,17 @@ export function App() {
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Impossible d'ajouter ce champ.");
       throw createError;
+    }
+  }
+
+  async function updateMemberFieldInput(fieldKey: string, input: { inputMode: "text" | "select"; options: string[] }) {
+    setError(null);
+    try {
+      await api.updateMemberFieldInput(fieldKey, input);
+      await loadData();
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Impossible de modifier la saisie de ce champ.");
+      throw updateError;
     }
   }
 
@@ -287,6 +302,7 @@ export function App() {
       setDashboard(null);
       setMembers([]);
       setMemberFields([]);
+      setModuleFields([]);
       setGroups([]);
     }
   }
@@ -358,10 +374,12 @@ export function App() {
             {view === "members" && <Members
               members={members}
               fields={memberFields}
+              moduleFields={moduleFields}
               groups={groups}
               savingMemberId={savingMemberId}
               onCreateMember={createMember}
               onCreateField={createMemberField}
+              onUpdateFieldInput={updateMemberFieldInput}
               onDeleteMember={deleteMember}
               onSaveMember={updateMember}
               onRevertField={revertMemberField}
@@ -932,10 +950,12 @@ function Extensions({ items, configuration, onChanged }: {
 function Members({
   members,
   fields,
+  moduleFields,
   groups,
   savingMemberId,
   onCreateMember,
   onCreateField,
+  onUpdateFieldInput,
   onDeleteMember,
   onSaveMember,
   onRevertField,
@@ -949,6 +969,7 @@ function Members({
 }: {
   members: Member[];
   fields: MemberField[];
+  moduleFields: ModuleField[];
   groups: Group[];
   savingMemberId: string | null;
   onCreateMember: (input: {
@@ -956,9 +977,11 @@ function Members({
     lastName: string;
     email: string;
     profileData: Record<string, string | number | boolean | null>;
+    moduleData: Record<string, string | number | boolean | null>;
     groupIds: string[];
   }) => Promise<void>;
-  onCreateField: (input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" }) => Promise<void>;
+  onCreateField: (input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "ChoiceList" | "File"; options?: string[] }) => Promise<void>;
+  onUpdateFieldInput: (fieldKey: string, input: { inputMode: "text" | "select"; options: string[] }) => Promise<void>;
   onDeleteMember: (member: Member) => Promise<boolean>;
   onSaveMember: (memberId: string, draft: MemberDraft, groupIds: string[]) => Promise<void>;
   onRevertField: (memberId: string, fieldKey: string) => Promise<void>;
@@ -979,10 +1002,11 @@ function Members({
     firstName: "",
     lastName: "",
     email: "",
-    customValues: {} as Record<string, string>
+    customValues: {} as Record<string, string>,
+    moduleValues: {} as Record<string, string>
   });
   const [newMemberGroups, setNewMemberGroups] = useState<Set<string>>(new Set());
-  const [newField, setNewField] = useState<{ label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" }>({ label: "", type: "Text" });
+  const [newField, setNewField] = useState<{ label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "ChoiceList" | "File"; options: string }>({ label: "", type: "Text", options: "" });
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState<MemberDraft | null>(null);
   const [search, setSearch] = useState("");
@@ -1033,7 +1057,7 @@ function Members({
   }
 
   function openCreation() {
-    setNewMember({ firstName: "", lastName: "", email: "", customValues: {} });
+    setNewMember({ firstName: "", lastName: "", email: "", customValues: {}, moduleValues: {} });
     setNewMemberGroups(new Set());
     setCreatingMember(true);
   }
@@ -1052,11 +1076,19 @@ function Members({
           ? value === "true"
           : value;
       }
+      const moduleData: Record<string, string | number | boolean | null> = {};
+      for (const field of moduleFields) {
+        const value = newMember.moduleValues[field.key] ?? "";
+        if (value === "") continue;
+        const target = field.storage === "profileData" ? profileData : moduleData;
+        target[field.key] = inputFieldValue(field, value);
+      }
       await onCreateMember({
         firstName: newMember.firstName.trim(),
         lastName: newMember.lastName.trim(),
         email: newMember.email.trim(),
         profileData,
+        moduleData,
         groupIds: [...newMemberGroups]
       });
       setCreatingMember(false);
@@ -1069,8 +1101,8 @@ function Members({
     event.preventDefault();
     setFieldBusy(true);
     try {
-      await onCreateField({ label: newField.label.trim(), type: newField.type });
-      setNewField({ label: "", type: "Text" });
+      await onCreateField({ label: newField.label.trim(), type: newField.type, options: splitOptions(newField.options) });
+      setNewField({ label: "", type: "Text", options: "" });
     } finally {
       setFieldBusy(false);
     }
@@ -1171,6 +1203,15 @@ function Members({
                 : <label key={field.key}>{field.label}<CustomFieldInput field={field} value={newMember.customValues[field.key] ?? ""} onChange={(value) => setNewMember((current) => ({ ...current, customValues: { ...current.customValues, [field.key]: value } }))} /></label>)}
             </div>}
           </div>
+          {moduleFields.length > 0 && <details className="module-fields-section" open>
+            <summary>Informations complémentaires utilisées par les extensions</summary>
+            <p className="muted">Ces informations sont facultatives et ne sont pas ajoutées à la liste principale des champs.</p>
+            <div className="custom-fields-grid">{moduleFields.map((field) => <label key={`${field.storage}:${field.key}`}>
+              {field.label}
+              <CustomFieldInput field={field} value={newMember.moduleValues[field.key] ?? ""} onChange={(value) => setNewMember((current) => ({ ...current, moduleValues: { ...current.moduleValues, [field.key]: value } }))} />
+              <small>{uniqueDescriptions(field).join(" ")}</small>
+            </label>)}</div>
+          </details>}
           <div><strong>Groupes</strong><GroupCheckboxes groups={groups} selection={newMemberGroups} onToggle={(groupId) => setNewMemberGroups((current) => toggledSet(current, groupId))} /></div>
           <div className="modal-actions"><button className="link-button" type="button" disabled={creatingBusy} onClick={() => setCreatingMember(false)}>Annuler</button><button className="primary" type="submit" disabled={creatingBusy || !newMember.firstName.trim() || !newMember.lastName.trim() || !newMember.email.trim()}>{creatingBusy ? "Ajout…" : "Ajouter l'adhérent"}</button></div>
         </form>
@@ -1178,11 +1219,17 @@ function Members({
       {managingFields && <Modal title="Champs des adhérents" eyebrow="Configuration locale" onClose={() => setManagingFields(false)}>
         <div className="member-field-manager">
           <p className="muted">Les champs créés ici restent disponibles avant et après la connexion à HelloAsso.</p>
-          {fields.length > 0 && <div className="member-field-list">{fields.map((field) => <div key={field.key}><strong>{field.label}</strong><span>{memberFieldTypeLabel(field.type)} · {field.source === "local" ? "local" : "HelloAsso"}</span></div>)}</div>}
+          {fields.length > 0 && <div className="member-field-list">{fields.map((field) => <FieldInputConfiguration key={field.key} field={field} onSave={onUpdateFieldInput} />)}</div>}
+          {moduleFields.some((field) => field.storage === "profileData") && <div>
+            <strong>Champs conservés pour les extensions</strong>
+            <p className="muted">Ils restent absents de la fiche principale, mais leur mode de saisie peut être réglé ici.</p>
+            <div className="member-field-list">{moduleFields.filter((field) => field.storage === "profileData").map((field) => <FieldInputConfiguration key={field.key} field={field} onSave={onUpdateFieldInput} />)}</div>
+          </div>}
           <form className="modal-form" onSubmit={(event) => void submitField(event)}>
             <label>Nom du champ<input required maxLength={150} value={newField.label} onChange={(event) => setNewField((current) => ({ ...current, label: event.target.value }))} placeholder="Ex. Numéro de licence" /></label>
-            <label>Type<select value={newField.type} onChange={(event) => setNewField((current) => ({ ...current, type: event.target.value as typeof current.type }))}><option value="Text">Texte</option><option value="Email">E-mail</option><option value="Phone">Téléphone</option><option value="Date">Date</option><option value="YesNo">Oui / Non</option><option value="File">Document</option></select></label>
-            <div className="modal-actions"><button className="link-button" type="button" onClick={() => setManagingFields(false)}>Fermer</button><button className="primary" type="submit" disabled={fieldBusy || !newField.label.trim()}>{fieldBusy ? "Ajout…" : "Ajouter le champ"}</button></div>
+            <label>Type<select value={newField.type} onChange={(event) => setNewField((current) => ({ ...current, type: event.target.value as typeof current.type }))}><option value="Text">Texte</option><option value="Email">E-mail</option><option value="Phone">Téléphone</option><option value="Date">Date</option><option value="YesNo">Oui / Non</option><option value="ChoiceList">Liste de choix</option><option value="File">Document</option></select></label>
+            {newField.type === "ChoiceList" && <label>Valeurs proposées<input value={newField.options} onChange={(event) => setNewField((current) => ({ ...current, options: event.target.value }))} placeholder="Ex. Droitier, Gaucher" /><small>Séparez les valeurs par une virgule.</small></label>}
+            <div className="modal-actions"><button className="link-button" type="button" onClick={() => setManagingFields(false)}>Fermer</button><button className="primary" type="submit" disabled={fieldBusy || !newField.label.trim() || (newField.type === "ChoiceList" && splitOptions(newField.options).length === 0)}>{fieldBusy ? "Ajout…" : "Ajouter le champ"}</button></div>
           </form>
         </div>
       </Modal>}
@@ -1282,6 +1329,15 @@ function MemberEditor({
           </label>)}
       </div>}
     </div>
+    {member.moduleFields.length > 0 && <details className="module-fields-section" open>
+      <summary>Informations complémentaires utilisées par les extensions</summary>
+      <p className="muted">Ces informations facultatives sont conservées localement pour les modules indiqués.</p>
+      <div className="custom-fields-grid">{member.moduleFields.map((field) => <label key={`${field.storage}:${field.key}`}>
+        <FieldLabel label={field.label} overridden={Boolean(field.overridden)} saving={saving} onRevert={() => onRevert(field.key)} />
+        <CustomFieldInput field={field} value={draft.moduleValues[field.key] ?? ""} onChange={(value) => change({ moduleValues: { ...draft.moduleValues, [field.key]: value } })} />
+        <small>{uniqueDescriptions(field).join(" ")}</small>
+      </label>)}</div>
+    </details>}
     <div><strong>Groupes</strong><GroupCheckboxes groups={groups} selection={selection} onToggle={onToggle} /></div>
     <div className="editor-actions member-editor-actions"><button className="danger-button" type="button" disabled={saving} onClick={onDelete}>Supprimer l'adhérent</button><span className="editor-actions-spacer" /><button className="link-button" type="button" disabled={saving} onClick={onCancel}>Annuler</button><button className="primary" type="button" disabled={saving || !draft.firstName.trim() || !draft.lastName.trim()} onClick={onSave}>{saving ? "Enregistrement…" : "Enregistrer localement"}</button></div>
   </div>;
@@ -1291,8 +1347,14 @@ function FieldLabel({ label, overridden, saving, onRevert }: { label: string; ov
   return <span className="field-label-row"><span>{label}</span>{overridden && <span className="local-override-actions"><small>Modifié localement</small><button className="revert-button" type="button" disabled={saving} onClick={onRevert}>Revenir à HelloAsso</button></span>}</span>;
 }
 
-function CustomFieldInput({ field, value, onChange }: { field: { type: string; label?: string }; value: string; onChange: (value: string) => void }) {
+function CustomFieldInput({ field, value, onChange }: { field: { type: string; label?: string; inputMode?: string; options?: string[] }; value: string; onChange: (value: string) => void }) {
   const type = field.type.toLocaleLowerCase("fr");
+  const options = field.options ?? [];
+  const valueIsKnown = options.some((option) => option.localeCompare(value, "fr", { sensitivity: "accent" }) === 0);
+  const [other, setOther] = useState(Boolean(value) && !valueIsKnown);
+  useEffect(() => {
+    if (value) setOther(!options.some((option) => option.localeCompare(value, "fr", { sensitivity: "accent" }) === 0));
+  }, [options, value]);
   if (type.includes("yesno") || type.includes("oui/non") || type.includes("boolean")) {
     return <select value={value} onChange={(event) => onChange(event.target.value)}><option value="">Non renseigné</option><option value="true">Oui</option><option value="false">Non</option></select>;
   }
@@ -1303,7 +1365,39 @@ function CustomFieldInput({ field, value, onChange }: { field: { type: string; l
   if (type.includes("phone") || type.includes("téléphone")) {
     return <input type="tel" inputMode="tel" value={formatPhoneNumber(value)} onChange={(event) => onChange(formatPhoneNumber(event.target.value))} placeholder="01 23 45 67 89" />;
   }
+  if (field.inputMode === "select" && options.length > 0) {
+    return <div className="choice-with-other">
+      <select value={other ? "__other__" : value} onChange={(event) => {
+        if (event.target.value === "__other__") { setOther(true); onChange(""); }
+        else { setOther(false); onChange(event.target.value); }
+      }}>
+        <option value="">Non renseigné</option>
+        {options.map((option) => <option key={option} value={option}>{option}</option>)}
+        <option value="__other__">Autre…</option>
+      </select>
+      {other && <input autoFocus value={value} onChange={(event) => onChange(event.target.value)} placeholder="Nouvelle valeur" />}
+    </div>;
+  }
   return <input value={value} onChange={(event) => onChange(event.target.value)} />;
+}
+
+function FieldInputConfiguration({ field, onSave }: { field: Pick<MemberField, "key" | "label" | "type" | "source" | "inputMode" | "options"> | Pick<ModuleField, "key" | "label" | "type" | "source" | "inputMode" | "options">; onSave: (fieldKey: string, input: { inputMode: "text" | "select"; options: string[] }) => Promise<void> }) {
+  const [mode, setMode] = useState<"text" | "select">(field.inputMode === "select" ? "select" : "text");
+  const [options, setOptions] = useState(field.options.join(", "));
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    setSaving(true);
+    try { await onSave(field.key, { inputMode: mode, options: splitOptions(options) }); }
+    finally { setSaving(false); }
+  };
+  return <div className="field-input-configuration">
+    <div><strong>{field.label}</strong><span>{memberFieldTypeLabel(field.type)} · {field.source === "local" ? "local" : field.source === "module" ? "extension" : "HelloAsso"}</span></div>
+    {field.type !== "File" && <div className="field-input-controls">
+      <select aria-label={`Mode de saisie de ${field.label}`} value={mode} onChange={(event) => setMode(event.target.value as "text" | "select")}><option value="text">Saisie libre</option><option value="select">Liste proposée</option></select>
+      {mode === "select" && <input aria-label={`Valeurs de ${field.label}`} value={options} onChange={(event) => setOptions(event.target.value)} placeholder="Valeur 1, Valeur 2" />}
+      <button className="secondary compact-button" type="button" disabled={saving || (mode === "select" && splitOptions(options).length === 0)} onClick={() => void save()}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+    </div>}
+  </div>;
 }
 
 function MemberDocument({ member, field, onChanged, documentPanels }: {
@@ -1356,7 +1450,8 @@ function memberDraft(member: Member): MemberDraft {
     firstName: member.firstName,
     lastName: member.lastName,
     email: member.email ?? "",
-    customValues: Object.fromEntries(member.customFields.map((field) => [field.key, customFieldInputValue(field)]))
+    customValues: Object.fromEntries(member.customFields.map((field) => [field.key, customFieldInputValue(field)])),
+    moduleValues: Object.fromEntries(member.moduleFields.map((field) => [field.key, customFieldInputValue(field)]))
   };
 }
 
@@ -1366,6 +1461,7 @@ function memberChanges(member: Member, draft: MemberDraft) {
     lastName?: string;
     email?: string;
     profileData?: Record<string, string | number | boolean | null>;
+    moduleData?: Record<string, string | number | boolean | null>;
   } = {};
   if (draft.firstName.trim() !== member.firstName) changes.firstName = draft.firstName.trim();
   if (draft.lastName.trim() !== member.lastName) changes.lastName = draft.lastName.trim();
@@ -1375,16 +1471,21 @@ function memberChanges(member: Member, draft: MemberDraft) {
     if (field.type === "File") continue;
     const value = draft.customValues[field.key] ?? "";
     if (value === customFieldInputValue(field)) continue;
-    const type = field.type.toLocaleLowerCase("fr");
-    profileData[field.key] = type.includes("yesno") || type.includes("oui/non") || type.includes("boolean")
-      ? value === "" ? null : value === "true"
-      : value;
+    profileData[field.key] = value === "" ? null : inputFieldValue(field, value);
+  }
+  const moduleData: Record<string, string | number | boolean | null> = {};
+  for (const field of member.moduleFields) {
+    const value = draft.moduleValues[field.key] ?? "";
+    if (value === customFieldInputValue(field)) continue;
+    const target = field.storage === "profileData" ? profileData : moduleData;
+    target[field.key] = value === "" ? null : inputFieldValue(field, value);
   }
   if (Object.keys(profileData).length > 0) changes.profileData = profileData;
+  if (Object.keys(moduleData).length > 0) changes.moduleData = moduleData;
   return changes;
 }
 
-function customFieldInputValue(field: Member["customFields"][number]) {
+function customFieldInputValue(field: { type: string; value?: unknown }) {
   if (field.value === null || field.value === undefined) return "";
   if (field.type.toLocaleLowerCase("fr") === "date" && typeof field.value === "string") {
     const frenchDate = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(field.value);
@@ -1395,8 +1496,23 @@ function customFieldInputValue(field: Member["customFields"][number]) {
   return String(field.value);
 }
 
+function inputFieldValue(field: { type: string }, value: string) {
+  const type = field.type.toLocaleLowerCase("fr");
+  return type.includes("yesno") || type.includes("oui/non") || type.includes("boolean")
+    ? value === "true"
+    : value;
+}
+
+function splitOptions(value: string) {
+  return [...new Map(value.split(/[,;\n]/).map((item) => item.trim()).filter(Boolean).map((item) => [item.toLocaleLowerCase("fr"), item])).values()];
+}
+
+function uniqueDescriptions(field: ModuleField) {
+  return [...new Set(field.usages.map((usage) => usage.description))];
+}
+
 function memberFieldTypeLabel(type: string) {
-  return ({ Text: "Texte", Email: "E-mail", Phone: "Téléphone", Date: "Date", YesNo: "Oui / Non", File: "Document" } as Record<string, string>)[type] ?? type;
+  return ({ Text: "Texte", Email: "E-mail", Phone: "Téléphone", Date: "Date", YesNo: "Oui / Non", ChoiceList: "Liste de choix", File: "Document" } as Record<string, string>)[type] ?? type;
 }
 
 function Groups({

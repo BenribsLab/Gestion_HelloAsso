@@ -18,6 +18,7 @@ import { ExtensionRegistry, ExtensionRegistryError, publicExtensionAssetContentT
 import { ExtensionContracts } from "./extension-contracts.js";
 import { loadExtensions, packageFile } from "./extension-loader.js";
 import { registerExtensionInstaller } from "./extension-installer.js";
+import { ensureMemberFieldInputs, resolveModuleFields, stringOptions } from "./member-fields.js";
 import {
   documentHash,
   maxDocumentBytes,
@@ -121,11 +122,20 @@ const memberCreateSchema = z.object({
   lastName: z.string().trim().min(1).max(100),
   email: z.email(),
   profileData: z.record(z.string(), profileValueSchema).optional().default({}),
+  moduleData: z.record(z.string(), profileValueSchema).optional().default({}),
   groupIds: z.array(z.uuid()).max(100).optional().default([])
 });
 const memberFieldCreateSchema = z.object({
   label: z.string().trim().min(1).max(150),
-  type: z.enum(["Text", "Email", "Phone", "Date", "YesNo", "File"])
+  type: z.enum(["Text", "Email", "Phone", "Date", "YesNo", "ChoiceList", "File"]),
+  options: z.array(z.string().trim().min(1).max(200)).max(50).optional().default([])
+}).refine((value) => value.type !== "ChoiceList" || value.options.length > 0, {
+  message: "Ajoutez au moins une valeur à la liste de choix.",
+  path: ["options"]
+});
+const memberFieldUpdateSchema = z.object({
+  inputMode: z.enum(["text", "select"]),
+  options: z.array(z.string().trim().min(1).max(200)).max(50)
 });
 const memberUpdateSchema = z.object({
   firstName: z.string().trim().min(1).max(100).optional(),
@@ -137,6 +147,7 @@ const memberUpdateSchema = z.object({
     { message: "La date de naissance est invalide." }
   ).optional(),
   profileData: z.record(z.string(), profileValueSchema).optional(),
+  moduleData: z.record(z.string(), profileValueSchema).optional(),
   groupIds: z.array(z.uuid()).max(100).optional()
 });
 const memberOverrideFieldSchema = z.object({
@@ -228,7 +239,11 @@ server.get("/api/dashboard", async () => {
 });
 
 server.get("/api/members", async () => {
+  await ensureMemberFieldInputs(database);
   const categoryContext = await contracts.loadMemberCategoryContext(database, (id) => extensions.isEnabled(id));
+  const requirements = contracts.activeMemberFieldRequirements((id) => extensions.isEnabled(id));
+  const resolvedModuleFields = await resolveModuleFields(database, requirements);
+  const moduleFields = resolvedModuleFields.filter((field) => !field.selected);
   const [result, fieldsResult, documentsResult] = await Promise.all([database.query<{
     id: string;
     firstName: string;
@@ -242,6 +257,8 @@ server.get("/api/members", async () => {
     birthDate: string | null;
     groups: Array<{ id: string; name: string }>;
     profileData: Record<string, unknown>;
+    moduleData: Record<string, unknown>;
+    sourceData: Record<string, unknown>;
     localOverrides: Record<string, unknown>;
   }>(`
     SELECT
@@ -259,6 +276,8 @@ server.get("/api/members", async () => {
         ELSE COALESCE(to_char(m.birth_date, 'YYYY-MM-DD'), birth.value)
       END AS "birthDate",
       COALESCE(m.profile_data, '{}'::jsonb) AS "profileData",
+      COALESCE(m.module_data, '{}'::jsonb) AS "moduleData",
+      COALESCE(m.source_data, '{}'::jsonb) AS "sourceData",
       m.local_overrides AS "localOverrides",
       COALESCE(
         jsonb_agg(jsonb_build_object('id', g.id, 'name', g.name))
@@ -278,8 +297,9 @@ server.get("/api/members", async () => {
     WHERE m.locally_deleted_at IS NULL
     GROUP BY m.id, birth.value
     ORDER BY m.last_name, m.first_name
-  `), database.query<{ key: string; label: string; type: string; source: "helloasso" | "local"; documentRole: "health" | null }>(`
-    SELECT field_key AS key, label, field_type AS type, source, document_role AS "documentRole"
+  `), database.query<{ key: string; label: string; type: string; source: "helloasso" | "local"; documentRole: "health" | null; inputMode: "auto" | "text" | "select"; options: unknown }>(`
+    SELECT field_key AS key, label, field_type AS type, source, document_role AS "documentRole",
+           input_mode AS "inputMode", choice_options AS options
     FROM helloasso_fields WHERE selected = true ORDER BY label
   `), database.query<{
     memberId: string; fieldKey: string; helloassoAvailable: boolean; localAvailable: boolean;
@@ -298,11 +318,15 @@ server.get("/api/members", async () => {
   `)]);
   const documents = new Map(documentsResult.rows.map((document) => [`${document.memberId}\0${document.fieldKey}`, document]));
   return {
-    fields: fieldsResult.rows,
+    fields: fieldsResult.rows.map((field) => ({ ...field, options: stringOptions(field.options) })),
+    moduleFields,
     items: result.rows.map((member) => {
       const birthDate = normalizeBirthDate(member.birthDate);
       const profileOverrides = isRecord(member.localOverrides.profileData)
         ? member.localOverrides.profileData
+        : {};
+      const moduleOverrides = isRecord(member.localOverrides.moduleData)
+        ? member.localOverrides.moduleData
         : {};
       return {
         ...member,
@@ -317,6 +341,7 @@ server.get("/api/members", async () => {
           const linkedOverride = linkedField && Object.hasOwn(member.localOverrides, linkedField);
           return {
             ...field,
+            options: stringOptions(field.options),
             value: Object.hasOwn(profileOverrides, field.key)
               ? profileOverrides[field.key]
               : linkedOverride
@@ -337,7 +362,24 @@ server.get("/api/members", async () => {
             } : undefined
           };
         }),
+        moduleFields: moduleFields.map((field) => {
+          const overridden = field.storage === "profileData"
+            ? Object.hasOwn(profileOverrides, field.key)
+            : Object.hasOwn(moduleOverrides, field.key);
+          const fallback = field.sourceRule.kind === "payer"
+            ? member.sourceData[`payer${field.sourceRule.property[0]!.toUpperCase()}${field.sourceRule.property.slice(1)}`]
+            : null;
+          return {
+            ...field,
+            value: field.storage === "profileData"
+              ? (overridden ? profileOverrides[field.key] : member.profileData[field.key] ?? null)
+              : (overridden ? moduleOverrides[field.key] : member.moduleData[field.key] ?? fallback ?? null),
+            overridden
+          };
+        }),
         profileData: undefined,
+        moduleData: undefined,
+        sourceData: undefined,
         localOverrides: undefined
       };
     })
@@ -360,19 +402,61 @@ server.post("/api/member-fields", async (request, reply) => {
     type: string;
     source: "local";
     documentRole: null;
+    inputMode: "text" | "select";
+    options: string[];
   }>(
-    `INSERT INTO helloasso_fields (field_key, label, field_type, selected, source)
-     VALUES ($1, $2, $3, true, 'local')
-     RETURNING field_key AS key, label, field_type AS type, source, document_role AS "documentRole"`,
-    [`local_${randomUUID()}`, input.label, input.type]
+    `INSERT INTO helloasso_fields (field_key, label, field_type, selected, source, input_mode, choice_options)
+     VALUES ($1, $2, $3, true, 'local', $4, $5)
+     RETURNING field_key AS key, label, field_type AS type, source,
+               document_role AS "documentRole", input_mode AS "inputMode", choice_options AS options`,
+    [
+      `local_${randomUUID()}`,
+      input.label,
+      input.type,
+      input.type === "ChoiceList" ? "select" : "text",
+      JSON.stringify(uniqueChoices(input.options))
+    ]
   );
   return reply.code(201).send(result.rows[0]);
+});
+
+server.put("/api/member-fields/:fieldKey/input", async (request, reply) => {
+  const { fieldKey } = memberOverrideFieldSchema.pick({ fieldKey: true }).parse(request.params);
+  const input = memberFieldUpdateSchema.parse(request.body);
+  if (input.inputMode === "select" && input.options.length === 0) {
+    return reply.code(400).send({ message: "Ajoutez au moins une valeur pour utiliser une liste." });
+  }
+  const result = await database.query<{
+    key: string; label: string; type: string; source: "local" | "helloasso";
+    documentRole: "health" | null; inputMode: "text" | "select"; options: string[];
+  }>(`
+    UPDATE helloasso_fields
+    SET input_mode = $2, choice_options = $3, updated_at = now()
+    WHERE field_key = $1
+    RETURNING field_key AS key, label, field_type AS type, source,
+              document_role AS "documentRole", input_mode AS "inputMode", choice_options AS options
+  `, [fieldKey, input.inputMode, JSON.stringify(uniqueChoices(input.options))]);
+  if (!result.rows[0]) return reply.code(404).send({ message: "Ce champ n'existe pas." });
+  return result.rows[0];
 });
 
 server.post("/api/members", async (request, reply) => {
   const input = memberCreateSchema.parse(request.body);
   const groupIds = [...new Set(input.groupIds)];
   const fieldKeys = Object.keys(input.profileData);
+  const moduleFields = await resolveModuleFields(
+    database,
+    contracts.activeMemberFieldRequirements((id) => extensions.isEnabled(id))
+  );
+  const allowedModuleKeys = new Set(
+    moduleFields.filter((field) => field.storage === "moduleData").map((field) => field.key)
+  );
+  if (Object.keys(input.moduleData).some((key) => !allowedModuleKeys.has(key))) {
+    return reply.code(400).send({ message: "Une information demandée par les extensions n'est pas disponible." });
+  }
+  const moduleProfileKeys = moduleFields
+    .filter((field) => field.storage === "profileData")
+    .map((field) => field.key);
   let fields: Array<{ key: string; label: string; type: string }> = [];
   const client = await database.connect();
   try {
@@ -387,8 +471,9 @@ server.post("/api/members", async (request, reply) => {
     if (fieldKeys.length > 0) {
       const fieldsResult = await client.query<{ key: string; label: string; type: string }>(
         `SELECT field_key AS key, label, field_type AS type FROM helloasso_fields
-         WHERE selected = true AND field_type <> 'File' AND field_key = ANY($1::text[])`,
-        [fieldKeys]
+         WHERE (selected = true OR field_key = ANY($2::text[]))
+           AND field_type <> 'File' AND field_key = ANY($1::text[])`,
+        [fieldKeys, moduleProfileKeys]
       );
       if (fieldsResult.rowCount !== fieldKeys.length) {
         await client.query("ROLLBACK");
@@ -413,11 +498,12 @@ server.post("/api/members", async (request, reply) => {
       }
     }
     const memberResult = await client.query<{ id: string }>(
-      `INSERT INTO members (first_name, last_name, email, phone, birth_date, status, source, profile_data)
-       VALUES ($1, $2, $3, $4, $5, 'active', 'manual', $6)
+      `INSERT INTO members (first_name, last_name, email, phone, birth_date, status, source, profile_data, module_data)
+       VALUES ($1, $2, $3, $4, $5, 'active', 'manual', $6, $7)
        RETURNING id`,
-      [input.firstName, input.lastName, input.email, phone, birthDate, input.profileData]
+      [input.firstName, input.lastName, input.email, phone, birthDate, input.profileData, input.moduleData]
     );
+    await rememberChoiceOptions(client, fields, input.profileData);
     const memberId = memberResult.rows[0]!.id;
     if (groupIds.length > 0) {
       await client.query(
@@ -609,6 +695,16 @@ server.put("/api/members/:memberId", async (request, reply) => {
   const { memberId } = memberIdSchema.parse(request.params);
   const input = memberUpdateSchema.parse(request.body);
   const groupIds = input.groupIds ? [...new Set(input.groupIds)] : null;
+  const moduleFields = await resolveModuleFields(
+    database,
+    contracts.activeMemberFieldRequirements((id) => extensions.isEnabled(id))
+  );
+  const moduleDataFields = moduleFields.filter((field) => field.storage === "moduleData");
+  const allowedModuleKeys = new Set(moduleDataFields.map((field) => field.key));
+  if (input.moduleData && Object.keys(input.moduleData).some((key) => !allowedModuleKeys.has(key))) {
+    return reply.code(400).send({ message: "Une information demandée par les extensions n'est pas modifiable ici." });
+  }
+  const moduleProfileKeys = moduleFields.filter((field) => field.storage === "profileData").map((field) => field.key);
   const client = await database.connect();
   try {
     await client.query("BEGIN");
@@ -627,11 +723,12 @@ server.put("/api/members/:memberId", async (request, reply) => {
       phone: string | null;
       birthDate: string | null;
       profileData: Record<string, unknown>;
+      moduleData: Record<string, unknown>;
       localOverrides: Record<string, unknown>;
     }>(
       `SELECT source, first_name AS "firstName", last_name AS "lastName", email, phone,
               to_char(birth_date, 'YYYY-MM-DD') AS "birthDate",
-              profile_data AS "profileData", local_overrides AS "localOverrides"
+              profile_data AS "profileData", module_data AS "moduleData", local_overrides AS "localOverrides"
        FROM members
        WHERE id = $1 AND locally_deleted_at IS NULL
        FOR UPDATE`,
@@ -648,8 +745,9 @@ server.put("/api/members/:memberId", async (request, reply) => {
       const fieldsResult = await client.query<{ key: string; label: string; type: string }>(
         `SELECT field_key AS key, label, field_type AS type
          FROM helloasso_fields
-         WHERE selected = true AND field_type <> 'File' AND field_key = ANY($1::text[])`,
-        [fieldKeys]
+         WHERE (selected = true OR field_key = ANY($2::text[]))
+           AND field_type <> 'File' AND field_key = ANY($1::text[])`,
+        [fieldKeys, moduleProfileKeys]
       );
       if (fieldsResult.rowCount !== fieldKeys.length) {
         await client.query("ROLLBACK");
@@ -660,6 +758,7 @@ server.put("/api/members/:memberId", async (request, reply) => {
 
     if (member.source === "manual") {
       const profileData = { ...member.profileData };
+      const moduleData = { ...member.moduleData, ...(input.moduleData ?? {}) };
       let email = input.email !== undefined ? input.email || null : member.email;
       let phone = input.phone !== undefined ? input.phone || null : member.phone;
       let birthDate = input.birthDate ?? member.birthDate;
@@ -682,7 +781,7 @@ server.put("/api/members/:memberId", async (request, reply) => {
       }
       await client.query(
         `UPDATE members SET first_name = $2, last_name = $3, email = $4, phone = $5,
-                birth_date = $6, profile_data = $7, updated_at = now()
+                birth_date = $6, profile_data = $7, module_data = $8, updated_at = now()
          WHERE id = $1`,
         [
           memberId,
@@ -691,7 +790,8 @@ server.put("/api/members/:memberId", async (request, reply) => {
           email,
           phone,
           birthDate,
-          profileData
+          profileData,
+          moduleData
         ]
       );
     } else {
@@ -718,11 +818,18 @@ server.put("/api/members/:memberId", async (request, reply) => {
         }
       }
       localOverrides.profileData = profileOverrides;
+      if (input.moduleData) {
+        localOverrides.moduleData = {
+          ...(isRecord(localOverrides.moduleData) ? localOverrides.moduleData : {}),
+          ...input.moduleData
+        };
+      }
       await client.query(
         "UPDATE members SET local_overrides = $2, updated_at = now() WHERE id = $1",
         [memberId, localOverrides]
       );
     }
+    if (input.profileData) await rememberChoiceOptions(client, fields, input.profileData);
     if (groupIds) {
       await client.query("DELETE FROM member_groups WHERE member_id = $1", [memberId]);
       if (groupIds.length > 0) {
@@ -781,6 +888,12 @@ server.delete("/api/members/:memberId", async (request, reply) => {
 
 server.delete("/api/members/:memberId/overrides/:fieldKey", async (request, reply) => {
   const { memberId, fieldKey } = memberOverrideFieldSchema.parse(request.params);
+  const moduleFields = await resolveModuleFields(
+    database,
+    contracts.activeMemberFieldRequirements((id) => extensions.isEnabled(id))
+  );
+  const moduleDataField = moduleFields.find((field) => field.storage === "moduleData" && field.key === fieldKey);
+  const moduleProfileKeys = moduleFields.filter((field) => field.storage === "profileData").map((field) => field.key);
   const client = await database.connect();
   try {
     await client.query("BEGIN");
@@ -801,11 +914,16 @@ server.delete("/api/members/:memberId/overrides/:fieldKey", async (request, repl
     const localOverrides = { ...member.localOverrides };
     if (["firstName", "lastName", "email", "phone", "birthDate"].includes(fieldKey)) {
       delete localOverrides[fieldKey];
+    } else if (moduleDataField) {
+      const moduleOverrides = isRecord(localOverrides.moduleData) ? { ...localOverrides.moduleData } : {};
+      delete moduleOverrides[fieldKey];
+      localOverrides.moduleData = moduleOverrides;
     } else {
       const fieldResult = await client.query<{ key: string; label: string; type: string }>(
         `SELECT field_key AS key, label, field_type AS type
-         FROM helloasso_fields WHERE selected = true AND field_key = $1`,
-        [fieldKey]
+         FROM helloasso_fields
+         WHERE (selected = true OR field_key = ANY($2::text[])) AND field_key = $1`,
+        [fieldKey, moduleProfileKeys]
       );
       const field = fieldResult.rows[0];
       if (!field) {
@@ -974,7 +1092,11 @@ server.put("/api/setup/groups", async (request, reply) => {
 });
 
 server.post("/api/helloasso/import-members", { config: { rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async () =>
-  importMembers(database, helloasso)
+  importMembers(
+    database,
+    helloasso,
+    contracts.activeMemberFieldRequirements((id) => extensions.isEnabled(id))
+  )
 );
 
 server.setErrorHandler((error, _request, reply) => {
@@ -1011,6 +1133,38 @@ server.setErrorHandler((error, _request, reply) => {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function uniqueChoices(values: string[]) {
+  return [...new Map(values
+    .map((value) => value.trim().replace(/\s+/g, " "))
+    .filter(Boolean)
+    .map((value) => [value.normalize("NFC").toLocaleLowerCase("fr"), value])
+  ).values()].sort((left, right) => left.localeCompare(right, "fr"));
+}
+
+async function rememberChoiceOptions(
+  client: { query<TRow = Record<string, unknown>>(sql: string, params?: unknown[]): Promise<{ rows: TRow[] }> },
+  fields: Array<{ key: string }>,
+  values: Record<string, string | number | boolean | null>
+) {
+  const keys = fields.map((field) => field.key);
+  if (keys.length === 0) return;
+  const configured = await client.query<{ key: string; options: unknown }>(`
+    SELECT field_key AS key, choice_options AS options
+    FROM helloasso_fields
+    WHERE field_key = ANY($1::text[]) AND input_mode = 'select'
+    FOR UPDATE
+  `, [keys]);
+  for (const field of configured.rows) {
+    const value = values[field.key];
+    if (typeof value !== "string" || !value.trim()) continue;
+    const options = uniqueChoices([...stringOptions(field.options), value]);
+    await client.query(
+      "UPDATE helloasso_fields SET choice_options = $2, updated_at = now() WHERE field_key = $1",
+      [field.key, JSON.stringify(options)]
+    );
+  }
 }
 
 async function resetHelloAssoSetup() {

@@ -8,6 +8,8 @@ import type {
 import { normalizeBirthDate } from "./fencing-category.js";
 import { refreshDynamicGroups } from "./dynamic-groups.js";
 import { groupValues, normalizeGroupValue } from "./group-values.js";
+import type { MemberFieldRequirement } from "./extension-contracts.js";
+import { resolveModuleFields } from "./member-fields.js";
 
 export { normalizeGroupValue } from "./group-values.js";
 
@@ -29,6 +31,36 @@ export function fieldKey(label: string, type: string) {
     .update(`${type}\0${label.normalize("NFC")}`)
     .digest("hex")
     .slice(0, 16)}`;
+}
+
+export function inferMemberFieldInput(type: string, answers: unknown[]) {
+  const values = [...new Map(
+    answers
+      .flatMap(answerChoiceValues)
+      .map((value) => [normalizeChoiceValue(value), value.trim()] as const)
+      .filter(([normalized]) => normalized.length > 0)
+  ).values()].sort((left, right) => left.localeCompare(right, "fr"));
+  const declaredChoice = /choice|yesno|oui\s*\/\s*non|boolean/i.test(type);
+  const scalarAnswerCount = answers.flatMap(answerChoiceValues).filter((value) => value.trim()).length;
+  const recurrentSmallSet = values.length >= 2
+    && values.length <= 8
+    && scalarAnswerCount >= Math.max(5, values.length * 2);
+  return {
+    inputMode: declaredChoice || recurrentSmallSet ? "select" as const : "text" as const,
+    options: values
+  };
+}
+
+function answerChoiceValues(answer: unknown): string[] {
+  if (typeof answer === "string" || typeof answer === "number" || typeof answer === "boolean") {
+    return [String(answer)];
+  }
+  if (Array.isArray(answer)) return answer.flatMap(answerChoiceValues);
+  return [];
+}
+
+function normalizeChoiceValue(value: string) {
+  return value.normalize("NFC").trim().replace(/\s+/g, " ").toLocaleLowerCase("fr");
 }
 
 export function isCampaignCurrent(campaign: {
@@ -196,6 +228,13 @@ export async function selectCampaigns(
       items: await helloasso.listMembershipItems(formSlug)
     }))
   );
+  const answersByIdentity = new Map<string, unknown[]>();
+  for (const answer of inspected.flatMap((campaign) => campaign.items).flatMap((item) => item.customFields)) {
+    const identity = `${answer.type}\0${answer.name}`;
+    const answers = answersByIdentity.get(identity) ?? [];
+    answers.push(answer.answer);
+    answersByIdentity.set(identity, answers);
+  }
 
   const client = await database.connect();
   try {
@@ -219,12 +258,32 @@ export async function selectCampaigns(
           [field.name, field.type]
         );
         const key = localMatch.rows[0]?.key ?? fieldKey(field.name, field.type);
+        const inferred = inferMemberFieldInput(
+          field.type,
+          answersByIdentity.get(`${field.type}\0${field.name}`) ?? []
+        );
+        const current = await client.query<{ inputMode: "auto" | "text" | "select"; options: unknown }>(
+          `SELECT input_mode AS "inputMode", choice_options AS options
+           FROM helloasso_fields WHERE field_key = $1`,
+          [key]
+        );
+        const currentOptions = Array.isArray(current.rows[0]?.options)
+          ? current.rows[0]!.options.filter((value): value is string => typeof value === "string")
+          : [];
+        const options = [...new Map(
+          [...currentOptions, ...inferred.options].map((value) => [normalizeChoiceValue(value), value])
+        ).values()].sort((left, right) => left.localeCompare(right, "fr"));
+        const inputMode = current.rows[0]?.inputMode === "auto" || !current.rows[0]
+          ? inferred.inputMode
+          : current.rows[0].inputMode;
         await client.query(
-          `INSERT INTO helloasso_fields (field_key, label, field_type)
-           VALUES ($1, $2, $3)
+          `INSERT INTO helloasso_fields (field_key, label, field_type, input_mode, choice_options)
+           VALUES ($1, $2, $3, $4, $5)
            ON CONFLICT (field_key) DO UPDATE SET
-             label = EXCLUDED.label, field_type = EXCLUDED.field_type, updated_at = now()`,
-          [key, field.name, field.type]
+             label = EXCLUDED.label, field_type = EXCLUDED.field_type,
+             input_mode = EXCLUDED.input_mode, choice_options = EXCLUDED.choice_options,
+             updated_at = now()`,
+          [key, field.name, field.type, inputMode, JSON.stringify(options)]
         );
         await client.query(
           `INSERT INTO helloasso_campaign_fields (form_slug, source_field_id, field_key)
@@ -445,7 +504,11 @@ export async function saveGroupDefinitions(
   return getSetupState(database);
 }
 
-export async function importMembers(database: Database, helloasso: HelloAssoClient) {
+export async function importMembers(
+  database: Database,
+  helloasso: HelloAssoClient,
+  requirements: MemberFieldRequirement[] = []
+) {
   const campaignsResult = await database.query<{ formSlug: string; title: string }>(
     `SELECT form_slug AS "formSlug", title FROM helloasso_campaigns WHERE selected = true`
   );
@@ -464,6 +527,17 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
   const selectedFields = new Map(
     fieldsResult.rows.map((field) => [`${field.type}\0${field.label}`, field])
   );
+  const moduleFields = await resolveModuleFields(database, requirements);
+  const retainedFields = new Map(selectedFields);
+  for (const field of moduleFields.filter((candidate) => candidate.storage === "profileData")) {
+    retainedFields.set(`${field.type}\0${field.label}`, {
+      key: field.key,
+      label: field.label,
+      type: field.type,
+      documentRole: null
+    });
+  }
+  const payerRequirements = requirements.filter((requirement) => requirement.source.kind === "payer");
   const allFieldsResult = await database.query<{ key: string; label: string; type: string }>(`
     SELECT DISTINCT f.field_key AS key, f.label, f.field_type AS type
     FROM helloasso_fields f
@@ -536,6 +610,12 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
             continue;
           }
           const profileData: Record<string, unknown> = {};
+          const moduleData: Record<string, unknown> = {};
+          for (const requirement of payerRequirements) {
+            if (requirement.source.kind !== "payer") continue;
+            const value = item.payer?.[requirement.source.property];
+            if (value !== undefined && value !== null && value !== "") moduleData[requirement.key] = value;
+          }
           const groupingValues = new Map<string, Set<string>>();
           groupingValues.set(
             "tier",
@@ -559,14 +639,14 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
             if (answer.type === "Date" && /date de naissance/.test(normalizedLabel)) {
               birthDate = dateAnswerToString(answer.answer);
             }
-            const selected = selectedFields.get(`${answer.type}\0${answer.name}`);
-            if (!selected) continue;
-            if (selected.type === "File") {
+            const retained = retainedFields.get(`${answer.type}\0${answer.name}`);
+            if (!retained) continue;
+            if (retained.type === "File") {
               const url = documentAnswerUrl(answer.answer);
-              if (url) documentAnswers.push({ fieldKey: selected.key, url });
+              if (url) documentAnswers.push({ fieldKey: retained.key, url });
               continue;
             }
-            profileData[selected.key] = answer.answer;
+            profileData[retained.key] = answer.answer;
             if (/e-?mail|courriel/.test(normalizedLabel)) email = answerToString(answer.answer);
             if (answer.type === "Phone" && /telephone 1/.test(normalizedLabel)) {
               phone = answerToString(answer.answer);
@@ -574,8 +654,8 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
           }
           const memberResult = await client.query<{ id: string; locallyDeletedAt: Date | null }>(
             `INSERT INTO members
-               (helloasso_item_id, first_name, last_name, email, phone, birth_date, status, source, source_data, profile_data)
-             VALUES ($1, $2, $3, $4, $5, $6, 'active', 'helloasso', $7, $8)
+               (helloasso_item_id, first_name, last_name, email, phone, birth_date, status, source, source_data, profile_data, module_data)
+             VALUES ($1, $2, $3, $4, $5, $6, 'active', 'helloasso', $7, $8, $9)
              ON CONFLICT (helloasso_item_id) DO UPDATE SET
                first_name = EXCLUDED.first_name,
                last_name = EXCLUDED.last_name,
@@ -585,6 +665,7 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
                status = CASE WHEN members.locally_deleted_at IS NULL THEN 'active' ELSE 'inactive' END,
                source_data = EXCLUDED.source_data,
                profile_data = EXCLUDED.profile_data,
+               module_data = members.module_data || EXCLUDED.module_data,
                updated_at = now()
              RETURNING id, locally_deleted_at AS "locallyDeletedAt"`,
             [
@@ -604,9 +685,12 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
                 orderId: item.order?.id ?? null,
                 orderDate: item.order?.date ?? null,
                 payerFirstName: item.payer?.firstName ?? null,
-                payerLastName: item.payer?.lastName ?? null
+                payerLastName: item.payer?.lastName ?? null,
+                payerEmail: item.payer?.email ?? null,
+                payerPhone: item.payer?.phone ?? null
               },
-              profileData
+              profileData,
+              moduleData
             ]
           );
           if (memberResult.rows[0]!.locallyDeletedAt) continue;

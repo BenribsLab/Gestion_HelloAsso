@@ -27,7 +27,12 @@ export type HelloAssoMembershipItem = {
   tierId?: number | undefined;
   user?: { firstName?: string | undefined; lastName?: string | undefined } | undefined;
   order?: { id?: number | undefined; date?: string | undefined } | undefined;
-  payer?: { firstName?: string | undefined; lastName?: string | undefined } | undefined;
+  payer?: {
+    firstName?: string | undefined;
+    lastName?: string | undefined;
+    email?: string | undefined;
+    phone?: string | undefined;
+  } | undefined;
   customFields: HelloAssoCustomField[];
 };
 
@@ -168,7 +173,12 @@ export function createHelloAssoClient(source: HelloAssoConfigSource) {
     order?: {
       id?: number | undefined;
       date?: string | undefined;
-      payer?: { firstName?: string | undefined; lastName?: string | undefined } | undefined;
+      payer?: {
+        firstName?: string | undefined;
+        lastName?: string | undefined;
+        email?: string | undefined;
+        phone?: string | undefined;
+      } | undefined;
     }
   ): HelloAssoMembershipItem | null {
     const result = z
@@ -339,7 +349,12 @@ export function createHelloAssoClient(source: HelloAssoConfigSource) {
         const order = z.object({
           id: z.number().optional(),
           date: z.string().optional(),
-          payer: z.object({ firstName: z.string().optional(), lastName: z.string().optional() }).optional(),
+          payer: z.object({
+            firstName: z.string().optional(),
+            lastName: z.string().optional(),
+            email: z.string().optional(),
+            phone: z.string().optional()
+          }).optional(),
           items: z.array(z.unknown()).default([])
         }).safeParse(value);
         if (!order.success) continue;

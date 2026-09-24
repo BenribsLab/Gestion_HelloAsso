@@ -103,6 +103,8 @@ export type Member = {
     type: string;
     value: unknown;
     overridden: boolean;
+    inputMode: "auto" | "text" | "select";
+    options: string[];
     document?: {
       available: boolean;
       source: "local" | "helloasso" | null;
@@ -116,6 +118,7 @@ export type Member = {
       hasHelloAssoOriginal: boolean;
     };
   }>;
+  moduleFields: ModuleField[];
   groups: Array<{ id: string; name: string }>;
 };
 
@@ -125,6 +128,21 @@ export type MemberField = {
   type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" | string;
   source: "local" | "helloasso";
   documentRole: "health" | null;
+  inputMode: "auto" | "text" | "select";
+  options: string[];
+};
+
+export type ModuleField = {
+  key: string;
+  label: string;
+  type: string;
+  storage: "profileData" | "moduleData";
+  source: "helloasso" | "module";
+  inputMode: "text" | "select";
+  options: string[];
+  usages: Array<{ extensionId: string; description: string }>;
+  value?: unknown;
+  overridden?: boolean;
 };
 
 export type SetupData = {
@@ -297,12 +315,13 @@ export const api = {
   extensionInstallations: () => request<{ items: ExtensionInstallation[] }>("/api/extensions/installations"),
   extensionRollbacks: (extensionId: string) => request<{ items: Array<{ directory: string; version: string }> }>(`/api/extensions/${extensionId}/rollbacks`),
   rollbackExtension: (extensionId: string, directory: string) => request<{ id: string; version: string; restartScheduled: boolean }>(`/api/extensions/${extensionId}/rollback`, { method: "POST", body: JSON.stringify({ directory }) }),
-  members: () => request<{ items: Member[]; fields: MemberField[] }>("/api/members"),
+  members: () => request<{ items: Member[]; fields: MemberField[]; moduleFields: ModuleField[] }>("/api/members"),
   createMember: (input: {
     firstName: string;
     lastName: string;
     email: string;
     profileData?: Record<string, string | number | boolean | null>;
+    moduleData?: Record<string, string | number | boolean | null>;
     groupIds?: string[];
   }) => request<{ memberId: string; source: "manual" }>("/api/members", {
     method: "POST",
@@ -312,8 +331,10 @@ export const api = {
     request<{ memberId: string; deleted: true; source: "manual" | "helloasso" }>(`/api/members/${memberId}`, {
       method: "DELETE"
     }),
-  createMemberField: (input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" }) =>
+  createMemberField: (input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "ChoiceList" | "File"; options?: string[] }) =>
     request<MemberField>("/api/member-fields", { method: "POST", body: JSON.stringify(input) }),
+  updateMemberFieldInput: (fieldKey: string, input: { inputMode: "text" | "select"; options: string[] }) =>
+    request<MemberField>(`/api/member-fields/${encodeURIComponent(fieldKey)}/input`, { method: "PUT", body: JSON.stringify(input) }),
   groups: () => request<{ items: Group[] }>("/api/groups"),
   groupCriteria: () => request<{ items: GroupCriterion[] }>("/api/group-criteria"),
   createGroup: (input: { name: string; description: string; criterion: { fieldKey: string; values: string[] } }) =>
@@ -332,6 +353,7 @@ export const api = {
     phone?: string;
     birthDate?: string;
     profileData?: Record<string, string | number | boolean | null>;
+    moduleData?: Record<string, string | number | boolean | null>;
     groupIds?: string[];
   }) => request<{ memberId: string; protectedLocally: true }>(`/api/members/${memberId}`, {
     method: "PUT",

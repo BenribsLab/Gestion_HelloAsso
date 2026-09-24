@@ -86,6 +86,10 @@ Le prénom, le nom, la campagne, le tarif et le statut HelloAsso sont toujours c
 
 Le répertoire peut être utilisé avant toute connexion à HelloAsso. Un administrateur peut créer un adhérent avec son nom, son prénom et son adresse e-mail, l'affecter à des groupes et définir des champs supplémentaires locaux (texte, e-mail, téléphone, date, oui/non ou document). Ces champs restent disponibles après la configuration de HelloAsso. Lorsqu'un champ découvert dans HelloAsso porte le même nom et le même type qu'un champ local, les deux sont raccordés afin d'éviter un doublon.
 
+Les champs de choix HelloAsso sont présentés comme des listes. Pour les autres champs, une petite série de réponses récurrentes peut également être détectée automatiquement ; l'administrateur peut toujours repasser le champ en saisie libre ou modifier les valeurs proposées. Le choix « Autre… » exige une saisie volontaire et la nouvelle valeur devient ensuite réutilisable.
+
+Une extension peut déclarer les informations dont elle dépend sans obliger le club à les afficher parmi ses champs habituels. Elles apparaissent dans une section séparée et facultative de la fiche (avec l'explication de leur usage), sont importées lorsqu'elles existent dans HelloAsso et peuvent être complétées ou corrigées localement sans être écrasées par une synchronisation.
+
 Un adhérent ajouté localement n'est jamais désactivé par un import HelloAsso. La suppression depuis sa fiche est également locale et persistante : un adhérent provenant de HelloAsso ne réapparaît pas lors des synchronisations suivantes. Aucune de ces opérations ne modifie les données hébergées par HelloAsso.
 
 ### Affectations manuelles
