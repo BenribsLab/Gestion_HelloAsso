@@ -212,7 +212,13 @@ export async function selectCampaigns(
       await client.query("DELETE FROM helloasso_campaign_fields WHERE form_slug = $1", [campaign.formSlug]);
       const fields = uniqueFields(campaign.items.flatMap((item) => item.customFields));
       for (const field of fields) {
-        const key = fieldKey(field.name, field.type);
+        const localMatch = await client.query<{ key: string }>(
+          `SELECT field_key AS key FROM helloasso_fields
+           WHERE source = 'local' AND lower(label) = lower($1) AND field_type = $2
+           ORDER BY discovered_at LIMIT 1`,
+          [field.name, field.type]
+        );
+        const key = localMatch.rows[0]?.key ?? fieldKey(field.name, field.type);
         await client.query(
           `INSERT INTO helloasso_fields (field_key, label, field_type)
            VALUES ($1, $2, $3)
@@ -275,7 +281,11 @@ export async function selectFields(database: Database, keys: string[], healthDoc
   const client = await database.connect();
   try {
     await client.query("BEGIN");
-    await client.query("UPDATE helloasso_fields SET selected = false, document_role = NULL, updated_at = now()");
+    await client.query(
+      `UPDATE helloasso_fields
+       SET selected = false, document_role = NULL, updated_at = now()
+       WHERE source = 'helloasso'`
+    );
     if (keys.length > 0) {
       await client.query(
         "UPDATE helloasso_fields SET selected = true, updated_at = now() WHERE field_key = ANY($1::text[])",
@@ -562,7 +572,7 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
               phone = answerToString(answer.answer);
             }
           }
-          const memberResult = await client.query<{ id: string }>(
+          const memberResult = await client.query<{ id: string; locallyDeletedAt: Date | null }>(
             `INSERT INTO members
                (helloasso_item_id, first_name, last_name, email, phone, birth_date, status, source, source_data, profile_data)
              VALUES ($1, $2, $3, $4, $5, $6, 'active', 'helloasso', $7, $8)
@@ -572,11 +582,11 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
                email = EXCLUDED.email,
                phone = EXCLUDED.phone,
                birth_date = EXCLUDED.birth_date,
-               status = 'active',
+               status = CASE WHEN members.locally_deleted_at IS NULL THEN 'active' ELSE 'inactive' END,
                source_data = EXCLUDED.source_data,
                profile_data = EXCLUDED.profile_data,
                updated_at = now()
-             RETURNING id`,
+             RETURNING id, locally_deleted_at AS "locallyDeletedAt"`,
             [
               item.id,
               item.user.firstName.trim(),
@@ -599,6 +609,7 @@ export async function importMembers(database: Database, helloasso: HelloAssoClie
               profileData
             ]
           );
+          if (memberResult.rows[0]!.locallyDeletedAt) continue;
           for (const fileField of fieldsResult.rows.filter((field) => field.type === "File")) {
             const document = documentAnswers.find((answer) => answer.fieldKey === fileField.key);
             await client.query(

@@ -55,6 +55,7 @@ h3 { margin-bottom: 4px; }
 .next-step p { margin: 0; max-width: 760px; color: #566a67; line-height: 1.65; }
 .section-heading { display: flex; justify-content: space-between; align-items: center; padding-bottom: 22px; border-bottom: 1px solid #eceee8; }
 .section-heading h2 { margin-bottom: 0; }
+.directory-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; }
 .count-pill { padding: 6px 11px; background: #eef2df; border-radius: 999px; color: #50611d; font-weight: 700; }
 .empty-state { padding: 54px 20px 36px; text-align: center; color: #71807e; }
 .empty-state h3 { color: #294448; margin: 13px 0 7px; }
@@ -103,6 +104,7 @@ th { color: #71807e; font-size: 13px; }
 .group-checkboxes label:has(input:checked) { border-color: #567b71; background: #e9f1d2; }
 .group-checkboxes input { width: 16px; height: 16px; margin: 0; accent-color: #28575a; }
 .editor-actions { display: flex; justify-content: flex-end; align-items: center; gap: 18px; }
+.editor-actions-spacer { flex: 1; }
 .group-detail { display: grid; gap: 20px; }
 .group-detail .section-heading { align-items: flex-end; }
 .group-detail .section-heading p:last-child { margin-bottom: 0; }
@@ -122,6 +124,10 @@ th { color: #71807e; font-size: 13px; }
 .member-name-button:hover { color: #326d70; }
 .member-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .member-fields label { font-size: 13px; }
+.member-field-manager { display: grid; gap: 20px; }
+.member-field-list { display: grid; gap: 8px; max-height: 280px; overflow: auto; }
+.member-field-list > div { display: flex; justify-content: space-between; gap: 18px; padding: 11px 13px; border: 1px solid #e4e9e7; border-radius: 10px; background: #f8faf8; }
+.member-field-list span { color: #71807e; font-size: 13px; text-align: right; }
 .categories-page { display: grid; gap: 22px; }
 .category-settings { display: flex; align-items: end; justify-content: space-between; gap: 28px; }
 .category-settings > div { max-width: 680px; }
@@ -411,6 +417,9 @@ th { color: #71807e; font-size: 13px; }
   .setup-section-header button, .setup-actions button, .import-button { width: 100%; }
   .connection-panel { align-items: flex-start; flex-direction: column; }
   .group-detail .section-heading { align-items: flex-start; }
+  .directory-actions { align-items: stretch; flex-direction: column; width: 100%; }
+  .member-editor-actions { align-items: stretch; flex-direction: column; }
+  .editor-actions-spacer { display: none; }
   .group-detail-actions { width: 100%; justify-content: space-between; }
   .schedule-row, .attendance-form, .holiday-list, .member-fields, .custom-fields-grid, .helloasso-settings-grid { grid-template-columns: 1fr; }
   .subsection-heading, .print-toolbar { align-items: stretch; flex-direction: column; }

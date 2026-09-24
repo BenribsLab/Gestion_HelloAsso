@@ -1,5 +1,5 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type AuthUser, type DashboardData, type Extension, type ExtensionConfiguration, type ExtensionInstallation, type Group, type GroupCriterion, type ManagedUser, type Member } from "./api";
+import { api, type AuthUser, type DashboardData, type Extension, type ExtensionConfiguration, type ExtensionInstallation, type Group, type GroupCriterion, type ManagedUser, type Member, type MemberField } from "./api";
 import { Setup } from "./Setup";
 import { uiContracts, type RegisteredDocumentPanel, type RegisteredGroupPanel, type RegisteredMemberAction, type RegisteredMemberColumn, type RegisteredMemberDetailPanel } from "./extension-contracts";
 import { CategoryBadge, memberCategoryLabel } from "./extensions/fencing-categories";
@@ -11,6 +11,7 @@ type View = CoreView | `ext:${string}`;
 type MemberDraft = {
   firstName: string;
   lastName: string;
+  email: string;
   customValues: Record<string, string>;
 };
 
@@ -18,6 +19,7 @@ export function App() {
   const [view, setView] = useState<View>("dashboard");
   const [dashboard, setDashboard] = useState<DashboardData | null>(null);
   const [members, setMembers] = useState<Member[]>([]);
+  const [memberFields, setMemberFields] = useState<MemberField[]>([]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupCriteria, setGroupCriteria] = useState<GroupCriterion[]>([]);
   const [extensions, setExtensions] = useState<Extension[]>([]);
@@ -56,6 +58,7 @@ export function App() {
       setExtensionConfiguration(extensionData.configuration);
       setDashboard(dashboardData);
       setMembers(memberData.items);
+      setMemberFields(memberData.fields);
       setGroups(groupData.items);
       setGroupCriteria(criteriaData.items);
     } catch (loadError) {
@@ -193,6 +196,53 @@ export function App() {
     }
   }
 
+  async function createMember(input: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    profileData: Record<string, string | number | boolean | null>;
+    groupIds: string[];
+  }) {
+    setError(null);
+    try {
+      await api.createMember(input);
+      await loadData();
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Impossible d'ajouter cet adhérent.");
+      throw createError;
+    }
+  }
+
+  async function deleteMember(member: Member) {
+    const persistent = member.source === "helloasso"
+      ? "Il restera supprimé localement lors des prochains imports HelloAsso."
+      : "Cet adhérent a été créé localement.";
+    if (!window.confirm(`Supprimer ${member.firstName} ${member.lastName} ?\n\n${persistent}`)) return false;
+    setSavingMemberId(member.id);
+    setError(null);
+    try {
+      await api.deleteMember(member.id);
+      await loadData();
+      return true;
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Impossible de supprimer cet adhérent.");
+      throw deleteError;
+    } finally {
+      setSavingMemberId(null);
+    }
+  }
+
+  async function createMemberField(input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" }) {
+    setError(null);
+    try {
+      await api.createMemberField(input);
+      await loadData();
+    } catch (createError) {
+      setError(createError instanceof Error ? createError.message : "Impossible d'ajouter ce champ.");
+      throw createError;
+    }
+  }
+
   async function revertMemberField(memberId: string, fieldKey: string) {
     setSavingMemberId(memberId);
     setError(null);
@@ -236,6 +286,7 @@ export function App() {
       setAccountOpen(false);
       setDashboard(null);
       setMembers([]);
+      setMemberFields([]);
       setGroups([]);
     }
   }
@@ -304,7 +355,24 @@ export function App() {
                 onCheckConnection={() => void checkConnection()}
               />
             )}
-            {view === "members" && <Members members={members} groups={groups} savingMemberId={savingMemberId} onSaveMember={updateMember} onRevertField={revertMemberField} onDocumentsChanged={loadData} onMemberAction={openExtensionAction} memberActions={memberActions} memberColumns={memberColumns} documentPanels={documentPanels} memberDetailPanels={memberDetailPanels} categoriesEnabled={uiContracts.memberColumns.isVisible("category", extensionEnabled)} />}
+            {view === "members" && <Members
+              members={members}
+              fields={memberFields}
+              groups={groups}
+              savingMemberId={savingMemberId}
+              onCreateMember={createMember}
+              onCreateField={createMemberField}
+              onDeleteMember={deleteMember}
+              onSaveMember={updateMember}
+              onRevertField={revertMemberField}
+              onDocumentsChanged={loadData}
+              onMemberAction={openExtensionAction}
+              memberActions={memberActions}
+              memberColumns={memberColumns}
+              documentPanels={documentPanels}
+              memberDetailPanels={memberDetailPanels}
+              categoriesEnabled={uiContracts.memberColumns.isVisible("category", extensionEnabled)}
+            />}
             {uiContracts.listViews(extensionEnabled)
               .filter((registration) => view === `ext:${registration.extensionId}`)
               .map((registration) => (
@@ -336,6 +404,7 @@ export function App() {
                 onDeleteGroup={(group) => void deleteGroup(group)}
                 onSelectGroup={setSelectedGroupId}
                 onMoveMember={updateMemberGroups}
+                onDeleteMember={deleteMember}
                 onSaveMember={updateMember}
                 onRevertField={revertMemberField}
                 onDocumentsChanged={loadData}
@@ -862,8 +931,12 @@ function Extensions({ items, configuration, onChanged }: {
 
 function Members({
   members,
+  fields,
   groups,
   savingMemberId,
+  onCreateMember,
+  onCreateField,
+  onDeleteMember,
   onSaveMember,
   onRevertField,
   onDocumentsChanged,
@@ -875,8 +948,18 @@ function Members({
   memberDetailPanels
 }: {
   members: Member[];
+  fields: MemberField[];
   groups: Group[];
   savingMemberId: string | null;
+  onCreateMember: (input: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    profileData: Record<string, string | number | boolean | null>;
+    groupIds: string[];
+  }) => Promise<void>;
+  onCreateField: (input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" }) => Promise<void>;
+  onDeleteMember: (member: Member) => Promise<boolean>;
   onSaveMember: (memberId: string, draft: MemberDraft, groupIds: string[]) => Promise<void>;
   onRevertField: (memberId: string, fieldKey: string) => Promise<void>;
   onDocumentsChanged: () => Promise<void>;
@@ -888,6 +971,18 @@ function Members({
   memberDetailPanels: RegisteredMemberDetailPanel[];
 }) {
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
+  const [creatingMember, setCreatingMember] = useState(false);
+  const [managingFields, setManagingFields] = useState(false);
+  const [creatingBusy, setCreatingBusy] = useState(false);
+  const [fieldBusy, setFieldBusy] = useState(false);
+  const [newMember, setNewMember] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    customValues: {} as Record<string, string>
+  });
+  const [newMemberGroups, setNewMemberGroups] = useState<Set<string>>(new Set());
+  const [newField, setNewField] = useState<{ label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" }>({ label: "", type: "Text" });
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [draft, setDraft] = useState<MemberDraft | null>(null);
   const [search, setSearch] = useState("");
@@ -937,6 +1032,50 @@ function Members({
     setDraft(memberDraft(member));
   }
 
+  function openCreation() {
+    setNewMember({ firstName: "", lastName: "", email: "", customValues: {} });
+    setNewMemberGroups(new Set());
+    setCreatingMember(true);
+  }
+
+  async function submitCreation(event: FormEvent) {
+    event.preventDefault();
+    setCreatingBusy(true);
+    try {
+      const profileData: Record<string, string | number | boolean | null> = {};
+      for (const field of fields) {
+        if (field.type === "File") continue;
+        const value = newMember.customValues[field.key] ?? "";
+        if (value === "") continue;
+        const type = field.type.toLocaleLowerCase("fr");
+        profileData[field.key] = type.includes("yesno") || type.includes("oui/non") || type.includes("boolean")
+          ? value === "true"
+          : value;
+      }
+      await onCreateMember({
+        firstName: newMember.firstName.trim(),
+        lastName: newMember.lastName.trim(),
+        email: newMember.email.trim(),
+        profileData,
+        groupIds: [...newMemberGroups]
+      });
+      setCreatingMember(false);
+    } finally {
+      setCreatingBusy(false);
+    }
+  }
+
+  async function submitField(event: FormEvent) {
+    event.preventDefault();
+    setFieldBusy(true);
+    try {
+      await onCreateField({ label: newField.label.trim(), type: newField.type });
+      setNewField({ label: "", type: "Text" });
+    } finally {
+      setFieldBusy(false);
+    }
+  }
+
   async function save(memberId: string) {
     if (!draft) return;
     try {
@@ -962,12 +1101,16 @@ function Members({
           <p className="eyebrow">Répertoire</p>
           <h2>Liste des adhérents</h2>
         </div>
-        <span className="count-pill">{filteredMembers.length} / {members.length}</span>
+        <div className="directory-actions">
+          <span className="count-pill">{filteredMembers.length} / {members.length}</span>
+          <button className="secondary" type="button" onClick={() => setManagingFields(true)}>Gérer les champs</button>
+          <button className="primary" type="button" onClick={openCreation}>Ajouter un adhérent</button>
+        </div>
       </div>
       {members.length === 0 ? (
         <EmptyState
           title="Aucun adhérent pour le moment"
-          text="La liste sera alimentée lors de la première synchronisation du formulaire d'adhésion HelloAsso."
+          text="Ajoutez un adhérent localement ou connectez HelloAsso pour importer vos inscriptions."
         />
       ) : (
         <>
@@ -1012,6 +1155,37 @@ function Members({
           <Pagination page={page} pageSize={pageSize} total={filteredMembers.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
         </>
       )}
+      {creatingMember && <Modal title="Ajouter un adhérent" eyebrow="Saisie locale" onClose={() => setCreatingMember(false)} size="large">
+        <form className="modal-form" onSubmit={(event) => void submitCreation(event)}>
+          <p className="muted">Cet adhérent restera dans la base lors des prochains imports HelloAsso.</p>
+          <div className="member-fields">
+            <label>Prénom<input required maxLength={100} value={newMember.firstName} onChange={(event) => setNewMember((current) => ({ ...current, firstName: event.target.value }))} /></label>
+            <label>Nom<input required maxLength={100} value={newMember.lastName} onChange={(event) => setNewMember((current) => ({ ...current, lastName: event.target.value }))} /></label>
+            <label>E-mail<input required type="email" value={newMember.email} onChange={(event) => setNewMember((current) => ({ ...current, email: event.target.value }))} /></label>
+          </div>
+          <div className="custom-fields-section">
+            <div><strong>Champs supplémentaires</strong><p>Les champs locaux et les champs retenus après un import HelloAsso sont disponibles ici.</p></div>
+            {fields.length === 0 ? <p className="empty-inline">Aucun champ supplémentaire. Vous pouvez en créer depuis « Gérer les champs ».</p> : <div className="custom-fields-grid">
+              {fields.map((field) => field.type === "File"
+                ? <div className="member-document-field" key={field.key}><div className="field-label-row"><span>{field.label}</span></div><p className="empty-inline">Le document pourra être ajouté après la création de l'adhérent.</p></div>
+                : <label key={field.key}>{field.label}<CustomFieldInput field={field} value={newMember.customValues[field.key] ?? ""} onChange={(value) => setNewMember((current) => ({ ...current, customValues: { ...current.customValues, [field.key]: value } }))} /></label>)}
+            </div>}
+          </div>
+          <div><strong>Groupes</strong><GroupCheckboxes groups={groups} selection={newMemberGroups} onToggle={(groupId) => setNewMemberGroups((current) => toggledSet(current, groupId))} /></div>
+          <div className="modal-actions"><button className="link-button" type="button" disabled={creatingBusy} onClick={() => setCreatingMember(false)}>Annuler</button><button className="primary" type="submit" disabled={creatingBusy || !newMember.firstName.trim() || !newMember.lastName.trim() || !newMember.email.trim()}>{creatingBusy ? "Ajout…" : "Ajouter l'adhérent"}</button></div>
+        </form>
+      </Modal>}
+      {managingFields && <Modal title="Champs des adhérents" eyebrow="Configuration locale" onClose={() => setManagingFields(false)}>
+        <div className="member-field-manager">
+          <p className="muted">Les champs créés ici restent disponibles avant et après la connexion à HelloAsso.</p>
+          {fields.length > 0 && <div className="member-field-list">{fields.map((field) => <div key={field.key}><strong>{field.label}</strong><span>{memberFieldTypeLabel(field.type)} · {field.source === "local" ? "local" : "HelloAsso"}</span></div>)}</div>}
+          <form className="modal-form" onSubmit={(event) => void submitField(event)}>
+            <label>Nom du champ<input required maxLength={150} value={newField.label} onChange={(event) => setNewField((current) => ({ ...current, label: event.target.value }))} placeholder="Ex. Numéro de licence" /></label>
+            <label>Type<select value={newField.type} onChange={(event) => setNewField((current) => ({ ...current, type: event.target.value as typeof current.type }))}><option value="Text">Texte</option><option value="Email">E-mail</option><option value="Phone">Téléphone</option><option value="Date">Date</option><option value="YesNo">Oui / Non</option><option value="File">Document</option></select></label>
+            <div className="modal-actions"><button className="link-button" type="button" onClick={() => setManagingFields(false)}>Fermer</button><button className="primary" type="submit" disabled={fieldBusy || !newField.label.trim()}>{fieldBusy ? "Ajout…" : "Ajouter le champ"}</button></div>
+          </form>
+        </div>
+      </Modal>}
       {editingMember && draft && <Modal
         title={`${editingMember.firstName} ${editingMember.lastName}`}
         eyebrow="Fiche adhérent"
@@ -1028,6 +1202,7 @@ function Members({
           onToggle={(groupId) => setSelection((current) => toggledSet(current, groupId))}
           onCancel={() => setEditingMemberId(null)}
           onSave={() => void save(editingMember.id)}
+          onDelete={() => void onDeleteMember(editingMember).then((deleted) => { if (deleted) setEditingMemberId(null); })}
           onRevert={(fieldKey) => void revert(editingMember.id, fieldKey)}
           onDocumentsChanged={onDocumentsChanged}
           onMemberAction={onMemberAction}
@@ -1050,6 +1225,7 @@ function MemberEditor({
   onToggle,
   onCancel,
   onSave,
+  onDelete,
   onRevert,
   onDocumentsChanged,
   onMemberAction,
@@ -1066,6 +1242,7 @@ function MemberEditor({
   onToggle: (groupId: string) => void;
   onCancel: () => void;
   onSave: () => void;
+  onDelete: () => void;
   onRevert: (fieldKey: string) => void;
   onDocumentsChanged: () => Promise<void>;
   onMemberAction: (extensionId: string, payload: unknown) => void;
@@ -1078,7 +1255,7 @@ function MemberEditor({
     customValues: { ...draft.customValues, [key]: value }
   });
   return <div className="member-group-editor">
-    <div className="member-editor-intro"><div><strong>Modifier {member.firstName} {member.lastName}</strong><p>Ces corrections sont locales et prioritaires : un nouvel import HelloAsso ne les écrasera pas.</p></div>{memberActions.map((action) => {
+    <div className="member-editor-intro"><div><strong>Modifier {member.firstName} {member.lastName}</strong><p>{member.source === "helloasso" ? "Ces corrections sont locales et prioritaires : un nouvel import HelloAsso ne les écrasera pas." : "Cet adhérent a été ajouté localement et restera indépendant des imports HelloAsso."}</p></div>{memberActions.map((action) => {
       const payload = action.payloadFor(member);
       return <button
         key={`${action.extensionId}/${action.label}`}
@@ -1092,6 +1269,7 @@ function MemberEditor({
     <div className="member-fields">
       <label><FieldLabel label="Prénom" overridden={member.overriddenFields.includes("firstName")} saving={saving} onRevert={() => onRevert("firstName")} /><input required value={draft.firstName} onChange={(event) => change({ firstName: event.target.value })} /></label>
       <label><FieldLabel label="Nom" overridden={member.overriddenFields.includes("lastName")} saving={saving} onRevert={() => onRevert("lastName")} /><input required value={draft.lastName} onChange={(event) => change({ lastName: event.target.value })} /></label>
+      <label><FieldLabel label="E-mail" overridden={member.overriddenFields.includes("email")} saving={saving} onRevert={() => onRevert("email")} /><input type="email" value={draft.email} onChange={(event) => change({ email: event.target.value })} /></label>
     </div>
     <div className="custom-fields-section">
       <div><strong>Champs supplémentaires sélectionnés</strong><p>{member.customFields.length} champ{member.customFields.length > 1 ? "s" : ""} conservé{member.customFields.length > 1 ? "s" : ""} depuis la configuration.</p></div>
@@ -1105,7 +1283,7 @@ function MemberEditor({
       </div>}
     </div>
     <div><strong>Groupes</strong><GroupCheckboxes groups={groups} selection={selection} onToggle={onToggle} /></div>
-    <div className="editor-actions"><button className="link-button" type="button" disabled={saving} onClick={onCancel}>Annuler</button><button className="primary" type="button" disabled={saving || !draft.firstName.trim() || !draft.lastName.trim()} onClick={onSave}>{saving ? "Enregistrement…" : "Enregistrer localement"}</button></div>
+    <div className="editor-actions member-editor-actions"><button className="danger-button" type="button" disabled={saving} onClick={onDelete}>Supprimer l'adhérent</button><span className="editor-actions-spacer" /><button className="link-button" type="button" disabled={saving} onClick={onCancel}>Annuler</button><button className="primary" type="button" disabled={saving || !draft.firstName.trim() || !draft.lastName.trim()} onClick={onSave}>{saving ? "Enregistrement…" : "Enregistrer localement"}</button></div>
   </div>;
 }
 
@@ -1113,13 +1291,14 @@ function FieldLabel({ label, overridden, saving, onRevert }: { label: string; ov
   return <span className="field-label-row"><span>{label}</span>{overridden && <span className="local-override-actions"><small>Modifié localement</small><button className="revert-button" type="button" disabled={saving} onClick={onRevert}>Revenir à HelloAsso</button></span>}</span>;
 }
 
-function CustomFieldInput({ field, value, onChange }: { field: Member["customFields"][number]; value: string; onChange: (value: string) => void }) {
+function CustomFieldInput({ field, value, onChange }: { field: { type: string; label?: string }; value: string; onChange: (value: string) => void }) {
   const type = field.type.toLocaleLowerCase("fr");
   if (type.includes("yesno") || type.includes("oui/non") || type.includes("boolean")) {
     return <select value={value} onChange={(event) => onChange(event.target.value)}><option value="">Non renseigné</option><option value="true">Oui</option><option value="false">Non</option></select>;
   }
   if (type === "date") {
-    return <input type="date" max={new Date().toISOString().slice(0, 10)} value={value} onChange={(event) => onChange(event.target.value)} />;
+    const isBirthDate = field.label?.toLocaleLowerCase("fr").includes("naissance") ?? false;
+    return <input type="date" max={isBirthDate ? new Date().toISOString().slice(0, 10) : undefined} value={value} onChange={(event) => onChange(event.target.value)} />;
   }
   if (type.includes("phone") || type.includes("téléphone")) {
     return <input type="tel" inputMode="tel" value={formatPhoneNumber(value)} onChange={(event) => onChange(formatPhoneNumber(event.target.value))} placeholder="01 23 45 67 89" />;
@@ -1176,6 +1355,7 @@ function memberDraft(member: Member): MemberDraft {
   return {
     firstName: member.firstName,
     lastName: member.lastName,
+    email: member.email ?? "",
     customValues: Object.fromEntries(member.customFields.map((field) => [field.key, customFieldInputValue(field)]))
   };
 }
@@ -1184,10 +1364,12 @@ function memberChanges(member: Member, draft: MemberDraft) {
   const changes: {
     firstName?: string;
     lastName?: string;
+    email?: string;
     profileData?: Record<string, string | number | boolean | null>;
   } = {};
   if (draft.firstName.trim() !== member.firstName) changes.firstName = draft.firstName.trim();
   if (draft.lastName.trim() !== member.lastName) changes.lastName = draft.lastName.trim();
+  if (draft.email.trim() !== (member.email ?? "")) changes.email = draft.email.trim();
   const profileData: Record<string, string | number | boolean | null> = {};
   for (const field of member.customFields) {
     if (field.type === "File") continue;
@@ -1213,6 +1395,10 @@ function customFieldInputValue(field: Member["customFields"][number]) {
   return String(field.value);
 }
 
+function memberFieldTypeLabel(type: string) {
+  return ({ Text: "Texte", Email: "E-mail", Phone: "Téléphone", Date: "Date", YesNo: "Oui / Non", File: "Document" } as Record<string, string>)[type] ?? type;
+}
+
 function Groups({
   groups,
   groupCriteria,
@@ -1233,6 +1419,7 @@ function Groups({
   onDeleteGroup,
   onSelectGroup,
   onMoveMember,
+  onDeleteMember,
   onSaveMember,
   onRevertField,
   onDocumentsChanged,
@@ -1263,6 +1450,7 @@ function Groups({
   onDeleteGroup: (group: Group) => void;
   onSelectGroup: (groupId: string) => void;
   onMoveMember: (memberId: string, groupIds: string[]) => Promise<void>;
+  onDeleteMember: (member: Member) => Promise<boolean>;
   onSaveMember: (memberId: string, draft: MemberDraft, groupIds: string[]) => Promise<void>;
   onRevertField: (memberId: string, fieldKey: string) => Promise<void>;
   onDocumentsChanged: () => Promise<void>;
@@ -1455,7 +1643,7 @@ function Groups({
 
       {editingMemberId && editingDraft && (() => {
         const member = members.find((item) => item.id === editingMemberId);
-        return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onDocumentsChanged={onDocumentsChanged} onMemberAction={onMemberAction} memberActions={memberActions} documentPanels={documentPanels} memberDetailPanels={memberDetailPanels} /></Modal> : null;
+        return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onDelete={() => void onDeleteMember(member).then((deleted) => { if (deleted) setEditingMemberId(null); })} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onDocumentsChanged={onDocumentsChanged} onMemberAction={onMemberAction} memberActions={memberActions} documentPanels={documentPanels} memberDetailPanels={memberDetailPanels} /></Modal> : null;
       })()}
     </div>
   );

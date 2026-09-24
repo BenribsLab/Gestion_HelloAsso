@@ -162,7 +162,7 @@ async function getActiveMembers(database: Queryable) {
       COALESCE(local_overrides, '{}'::jsonb) AS "localOverrides",
       to_char(birth_date, 'YYYY-MM-DD') AS "birthDate"
     FROM members
-    WHERE status = 'active'
+    WHERE status = 'active' AND locally_deleted_at IS NULL
   `);
   return result.rows;
 }

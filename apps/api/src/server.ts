@@ -4,7 +4,7 @@ import multipart from "@fastify/multipart";
 import rateLimit from "@fastify/rate-limit";
 import websocket from "@fastify/websocket";
 import { readFile } from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { loadConfig } from "./config.js";
 import { createDatabase } from "./db.js";
@@ -115,6 +115,18 @@ const groupIdSchema = z.object({ groupId: z.uuid() });
 const memberGroupSelectionSchema = z.object({
   groupIds: z.array(z.uuid()).max(100)
 });
+const profileValueSchema = z.union([z.string().max(2_000), z.boolean(), z.number(), z.null()]);
+const memberCreateSchema = z.object({
+  firstName: z.string().trim().min(1).max(100),
+  lastName: z.string().trim().min(1).max(100),
+  email: z.email(),
+  profileData: z.record(z.string(), profileValueSchema).optional().default({}),
+  groupIds: z.array(z.uuid()).max(100).optional().default([])
+});
+const memberFieldCreateSchema = z.object({
+  label: z.string().trim().min(1).max(150),
+  type: z.enum(["Text", "Email", "Phone", "Date", "YesNo", "File"])
+});
 const memberUpdateSchema = z.object({
   firstName: z.string().trim().min(1).max(100).optional(),
   lastName: z.string().trim().min(1).max(100).optional(),
@@ -124,7 +136,7 @@ const memberUpdateSchema = z.object({
     (value) => fencingCategoryError(value) === null,
     { message: "La date de naissance est invalide." }
   ).optional(),
-  profileData: z.record(z.string(), z.union([z.string().max(2_000), z.boolean(), z.number(), z.null()])).optional(),
+  profileData: z.record(z.string(), profileValueSchema).optional(),
   groupIds: z.array(z.uuid()).max(100).optional()
 });
 const memberOverrideFieldSchema = z.object({
@@ -199,7 +211,7 @@ server.get("/api/extensions/:extensionId/assets/*", async (request, reply) => {
 
 server.get("/api/dashboard", async () => {
   const [memberResult, groupResult, helloassoStatus] = await Promise.all([
-    database.query<{ count: string }>("SELECT count(*)::text AS count FROM members"),
+    database.query<{ count: string }>("SELECT count(*)::text AS count FROM members WHERE locally_deleted_at IS NULL"),
     database.query<{ count: string }>("SELECT count(*)::text AS count FROM groups"),
     helloassoSettings.status()
   ]);
@@ -263,10 +275,11 @@ server.get("/api/members", async () => {
     ) birth ON true
     LEFT JOIN member_groups mg ON mg.member_id = m.id
     LEFT JOIN groups g ON g.id = mg.group_id
+    WHERE m.locally_deleted_at IS NULL
     GROUP BY m.id, birth.value
     ORDER BY m.last_name, m.first_name
-  `), database.query<{ key: string; label: string; type: string; documentRole: "health" | null }>(`
-    SELECT field_key AS key, label, field_type AS type, document_role AS "documentRole"
+  `), database.query<{ key: string; label: string; type: string; source: "helloasso" | "local"; documentRole: "health" | null }>(`
+    SELECT field_key AS key, label, field_type AS type, source, document_role AS "documentRole"
     FROM helloasso_fields WHERE selected = true ORDER BY label
   `), database.query<{
     memberId: string; fieldKey: string; helloassoAvailable: boolean; localAvailable: boolean;
@@ -285,6 +298,7 @@ server.get("/api/members", async () => {
   `)]);
   const documents = new Map(documentsResult.rows.map((document) => [`${document.memberId}\0${document.fieldKey}`, document]));
   return {
+    fields: fieldsResult.rows,
     items: result.rows.map((member) => {
       const birthDate = normalizeBirthDate(member.birthDate);
       const profileOverrides = isRecord(member.localOverrides.profileData)
@@ -330,6 +344,99 @@ server.get("/api/members", async () => {
   };
 });
 
+server.post("/api/member-fields", async (request, reply) => {
+  const input = memberFieldCreateSchema.parse(request.body);
+  const duplicate = await database.query(
+    `SELECT 1 FROM helloasso_fields
+     WHERE lower(label) = lower($1) AND field_type = $2`,
+    [input.label, input.type]
+  );
+  if (duplicate.rows[0]) {
+    return reply.code(409).send({ message: "Un champ de ce type porte déjà ce nom." });
+  }
+  const result = await database.query<{
+    key: string;
+    label: string;
+    type: string;
+    source: "local";
+    documentRole: null;
+  }>(
+    `INSERT INTO helloasso_fields (field_key, label, field_type, selected, source)
+     VALUES ($1, $2, $3, true, 'local')
+     RETURNING field_key AS key, label, field_type AS type, source, document_role AS "documentRole"`,
+    [`local_${randomUUID()}`, input.label, input.type]
+  );
+  return reply.code(201).send(result.rows[0]);
+});
+
+server.post("/api/members", async (request, reply) => {
+  const input = memberCreateSchema.parse(request.body);
+  const groupIds = [...new Set(input.groupIds)];
+  const fieldKeys = Object.keys(input.profileData);
+  let fields: Array<{ key: string; label: string; type: string }> = [];
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    if (groupIds.length > 0) {
+      const groupsResult = await client.query("SELECT id FROM groups WHERE id = ANY($1::uuid[])", [groupIds]);
+      if (groupsResult.rowCount !== groupIds.length) {
+        await client.query("ROLLBACK");
+        return reply.code(400).send({ message: "Un des groupes choisis n'existe pas." });
+      }
+    }
+    if (fieldKeys.length > 0) {
+      const fieldsResult = await client.query<{ key: string; label: string; type: string }>(
+        `SELECT field_key AS key, label, field_type AS type FROM helloasso_fields
+         WHERE selected = true AND field_type <> 'File' AND field_key = ANY($1::text[])`,
+        [fieldKeys]
+      );
+      if (fieldsResult.rowCount !== fieldKeys.length) {
+        await client.query("ROLLBACK");
+        return reply.code(400).send({ message: "Un des champs supplémentaires n'est pas disponible." });
+      }
+      fields = fieldsResult.rows;
+    }
+    let birthDate: string | null = null;
+    let phone: string | null = null;
+    for (const field of fields) {
+      const value = input.profileData[field.key] ?? null;
+      const linkedField = linkedCoreField(field);
+      if (linkedField === "birthDate") {
+        const normalized = typeof value === "string" ? normalizeBirthDate(value) : null;
+        if (value !== null && (!normalized || fencingCategoryError(normalized))) {
+          await client.query("ROLLBACK");
+          return reply.code(400).send({ message: "La date de naissance est invalide." });
+        }
+        birthDate = normalized;
+      } else if (linkedField === "phone") {
+        phone = value === null ? null : String(value);
+      }
+    }
+    const memberResult = await client.query<{ id: string }>(
+      `INSERT INTO members (first_name, last_name, email, phone, birth_date, status, source, profile_data)
+       VALUES ($1, $2, $3, $4, $5, 'active', 'manual', $6)
+       RETURNING id`,
+      [input.firstName, input.lastName, input.email, phone, birthDate, input.profileData]
+    );
+    const memberId = memberResult.rows[0]!.id;
+    if (groupIds.length > 0) {
+      await client.query(
+        `INSERT INTO member_groups (member_id, group_id, source)
+         SELECT $1, id, 'manual' FROM groups WHERE id = ANY($2::uuid[])`,
+        [memberId, groupIds]
+      );
+    }
+    await refreshDynamicGroups(client);
+    await client.query("COMMIT");
+    return reply.code(201).send({ memberId, source: "manual" });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
 server.get("/api/groups", async () => {
   await refreshDynamicGroups(database);
   const [result, schedulesByGroup] = await Promise.all([
@@ -355,7 +462,10 @@ server.get("/api/groups", async () => {
           )
           FROM group_dynamic_rules rule WHERE rule.group_id = g.id
         ) ELSE NULL END AS "dynamicRule",
-        (SELECT count(*)::int FROM member_groups mg WHERE mg.group_id = g.id) AS "membersCount"
+        (SELECT count(*)::int
+         FROM member_groups mg
+         JOIN members member_count ON member_count.id = mg.member_id
+         WHERE mg.group_id = g.id AND member_count.locally_deleted_at IS NULL) AS "membersCount"
       FROM groups g
       ORDER BY g.name
     `),
@@ -448,7 +558,10 @@ server.put("/api/members/:memberId/groups", async (request, reply) => {
   const client = await database.connect();
   try {
     await client.query("BEGIN");
-    const memberResult = await client.query("SELECT 1 FROM members WHERE id = $1", [memberId]);
+    const memberResult = await client.query(
+      "SELECT 1 FROM members WHERE id = $1 AND locally_deleted_at IS NULL",
+      [memberId]
+    );
     if (memberResult.rowCount === 0) {
       await client.query("ROLLBACK");
       return reply.code(404).send({ message: "Cet adhérent n'existe pas." });
@@ -506,18 +619,30 @@ server.put("/api/members/:memberId", async (request, reply) => {
         return reply.code(400).send({ message: "Un des groupes choisis n'existe pas." });
       }
     }
-    const memberResult = await client.query<{ localOverrides: Record<string, unknown> }>(
-      `SELECT local_overrides AS "localOverrides" FROM members WHERE id = $1 FOR UPDATE`,
+    const memberResult = await client.query<{
+      source: "manual" | "helloasso";
+      firstName: string;
+      lastName: string;
+      email: string | null;
+      phone: string | null;
+      birthDate: string | null;
+      profileData: Record<string, unknown>;
+      localOverrides: Record<string, unknown>;
+    }>(
+      `SELECT source, first_name AS "firstName", last_name AS "lastName", email, phone,
+              to_char(birth_date, 'YYYY-MM-DD') AS "birthDate",
+              profile_data AS "profileData", local_overrides AS "localOverrides"
+       FROM members
+       WHERE id = $1 AND locally_deleted_at IS NULL
+       FOR UPDATE`,
       [memberId]
     );
-    if (!memberResult.rows[0]) {
+    const member = memberResult.rows[0];
+    if (!member) {
       await client.query("ROLLBACK");
       return reply.code(404).send({ message: "Cet adhérent n'existe pas." });
     }
-    const localOverrides = { ...memberResult.rows[0].localOverrides };
-    for (const key of ["firstName", "lastName", "email", "phone", "birthDate"] as const) {
-      if (input[key] !== undefined) localOverrides[key] = input[key];
-    }
+    let fields: Array<{ key: string; label: string; type: string }> = [];
     if (input.profileData && Object.keys(input.profileData).length > 0) {
       const fieldKeys = Object.keys(input.profileData);
       const fieldsResult = await client.query<{ key: string; label: string; type: string }>(
@@ -530,11 +655,55 @@ server.put("/api/members/:memberId", async (request, reply) => {
         await client.query("ROLLBACK");
         return reply.code(400).send({ message: "Un des champs supplémentaires n'est pas modifiable ici." });
       }
+      fields = fieldsResult.rows;
+    }
+
+    if (member.source === "manual") {
+      const profileData = { ...member.profileData };
+      let email = input.email !== undefined ? input.email || null : member.email;
+      let phone = input.phone !== undefined ? input.phone || null : member.phone;
+      let birthDate = input.birthDate ?? member.birthDate;
+      for (const field of fields) {
+        const value = input.profileData?.[field.key] ?? null;
+        profileData[field.key] = value;
+        const linkedField = linkedCoreField(field);
+        if (linkedField === "birthDate") {
+          const normalized = typeof value === "string" ? normalizeBirthDate(value) : null;
+          if (value !== null && (!normalized || fencingCategoryError(normalized))) {
+            await client.query("ROLLBACK");
+            return reply.code(400).send({ message: "La date de naissance est invalide." });
+          }
+          birthDate = normalized;
+        } else if (linkedField === "email") {
+          email = value === null ? null : String(value);
+        } else if (linkedField === "phone") {
+          phone = value === null ? null : String(value);
+        }
+      }
+      await client.query(
+        `UPDATE members SET first_name = $2, last_name = $3, email = $4, phone = $5,
+                birth_date = $6, profile_data = $7, updated_at = now()
+         WHERE id = $1`,
+        [
+          memberId,
+          input.firstName ?? member.firstName,
+          input.lastName ?? member.lastName,
+          email,
+          phone,
+          birthDate,
+          profileData
+        ]
+      );
+    } else {
+      const localOverrides = { ...member.localOverrides };
+      for (const key of ["firstName", "lastName", "email", "phone", "birthDate"] as const) {
+        if (input[key] !== undefined) localOverrides[key] = input[key];
+      }
       const profileOverrides = isRecord(localOverrides.profileData)
         ? { ...localOverrides.profileData }
         : {};
-      for (const field of fieldsResult.rows) {
-        const value = input.profileData[field.key] ?? null;
+      for (const field of fields) {
+        const value = input.profileData?.[field.key] ?? null;
         profileOverrides[field.key] = value;
         const linkedField = linkedCoreField(field);
         if (linkedField === "birthDate") {
@@ -549,11 +718,11 @@ server.put("/api/members/:memberId", async (request, reply) => {
         }
       }
       localOverrides.profileData = profileOverrides;
+      await client.query(
+        "UPDATE members SET local_overrides = $2, updated_at = now() WHERE id = $1",
+        [memberId, localOverrides]
+      );
     }
-    await client.query(
-      "UPDATE members SET local_overrides = $2, updated_at = now() WHERE id = $1",
-      [memberId, localOverrides]
-    );
     if (groupIds) {
       await client.query("DELETE FROM member_groups WHERE member_id = $1", [memberId]);
       if (groupIds.length > 0) {
@@ -573,7 +742,35 @@ server.put("/api/members/:memberId", async (request, reply) => {
     }
     await refreshDynamicGroups(client);
     await client.query("COMMIT");
-    return { memberId, protectedLocally: true };
+    return { memberId, protectedLocally: member.source === "helloasso" };
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+server.delete("/api/members/:memberId", async (request, reply) => {
+  const { memberId } = memberIdSchema.parse(request.params);
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await client.query<{ source: "manual" | "helloasso" }>(
+      `UPDATE members
+       SET locally_deleted_at = now(), status = 'inactive', updated_at = now()
+       WHERE id = $1 AND locally_deleted_at IS NULL
+       RETURNING source`,
+      [memberId]
+    );
+    if (!result.rows[0]) {
+      await client.query("ROLLBACK");
+      return reply.code(404).send({ message: "Cet adhérent n'existe pas." });
+    }
+    await client.query("DELETE FROM member_groups WHERE member_id = $1", [memberId]);
+    await refreshDynamicGroups(client);
+    await client.query("COMMIT");
+    return { memberId, deleted: true, source: result.rows[0].source };
   } catch (error) {
     await client.query("ROLLBACK");
     throw error;
@@ -587,15 +784,21 @@ server.delete("/api/members/:memberId/overrides/:fieldKey", async (request, repl
   const client = await database.connect();
   try {
     await client.query("BEGIN");
-    const memberResult = await client.query<{ localOverrides: Record<string, unknown> }>(
-      `SELECT local_overrides AS "localOverrides" FROM members WHERE id = $1 FOR UPDATE`,
+    const memberResult = await client.query<{ source: string; localOverrides: Record<string, unknown> }>(
+      `SELECT source, local_overrides AS "localOverrides"
+       FROM members WHERE id = $1 AND locally_deleted_at IS NULL FOR UPDATE`,
       [memberId]
     );
-    if (!memberResult.rows[0]) {
+    const member = memberResult.rows[0];
+    if (!member) {
       await client.query("ROLLBACK");
       return reply.code(404).send({ message: "Cet adhérent n'existe pas." });
     }
-    const localOverrides = { ...memberResult.rows[0].localOverrides };
+    if (member.source === "manual") {
+      await client.query("ROLLBACK");
+      return reply.code(409).send({ message: "Cet adhérent est local : il n'existe aucune valeur HelloAsso à restaurer." });
+    }
+    const localOverrides = { ...member.localOverrides };
     if (["firstName", "lastName", "email", "phone", "birthDate"].includes(fieldKey)) {
       delete localOverrides[fieldKey];
     } else {
@@ -654,7 +857,7 @@ server.post("/api/members/:memberId/documents/:fieldKey", {
   const field = await database.query<{ health: boolean }>(`
     SELECT document_role = 'health' AS health FROM helloasso_fields
     WHERE field_key = $1 AND selected = true AND field_type = 'File'
-      AND EXISTS (SELECT 1 FROM members WHERE id = $2)
+      AND EXISTS (SELECT 1 FROM members WHERE id = $2 AND locally_deleted_at IS NULL)
   `, [input.fieldKey, input.memberId]);
   if (!field.rows[0]) return reply.code(404).send({ message: "Ce champ document n'existe pas." });
   const part = await request.file();
@@ -870,6 +1073,7 @@ async function getDocumentRecord(memberId: string, fieldKey: string) {
            d.analysis_version AS "analysisVersion"
     FROM member_documents d
     JOIN helloasso_fields f ON f.field_key = d.field_key AND f.selected = true AND f.field_type = 'File'
+    JOIN members m ON m.id = d.member_id AND m.locally_deleted_at IS NULL
     WHERE d.member_id = $1 AND d.field_key = $2
       AND (d.local_content IS NOT NULL OR d.helloasso_url IS NOT NULL)
   `, [memberId, fieldKey]);

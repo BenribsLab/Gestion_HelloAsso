@@ -90,7 +90,7 @@ export type Member = {
   email: string | null;
   phone: string | null;
   status: string;
-  source: string;
+  source: "manual" | "helloasso";
   campaignTitle: string | null;
   tierName: string | null;
   birthDate: string | null;
@@ -117,6 +117,14 @@ export type Member = {
     };
   }>;
   groups: Array<{ id: string; name: string }>;
+};
+
+export type MemberField = {
+  key: string;
+  label: string;
+  type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" | string;
+  source: "local" | "helloasso";
+  documentRole: "health" | null;
 };
 
 export type SetupData = {
@@ -289,7 +297,23 @@ export const api = {
   extensionInstallations: () => request<{ items: ExtensionInstallation[] }>("/api/extensions/installations"),
   extensionRollbacks: (extensionId: string) => request<{ items: Array<{ directory: string; version: string }> }>(`/api/extensions/${extensionId}/rollbacks`),
   rollbackExtension: (extensionId: string, directory: string) => request<{ id: string; version: string; restartScheduled: boolean }>(`/api/extensions/${extensionId}/rollback`, { method: "POST", body: JSON.stringify({ directory }) }),
-  members: () => request<{ items: Member[] }>("/api/members"),
+  members: () => request<{ items: Member[]; fields: MemberField[] }>("/api/members"),
+  createMember: (input: {
+    firstName: string;
+    lastName: string;
+    email: string;
+    profileData?: Record<string, string | number | boolean | null>;
+    groupIds?: string[];
+  }) => request<{ memberId: string; source: "manual" }>("/api/members", {
+    method: "POST",
+    body: JSON.stringify(input)
+  }),
+  deleteMember: (memberId: string) =>
+    request<{ memberId: string; deleted: true; source: "manual" | "helloasso" }>(`/api/members/${memberId}`, {
+      method: "DELETE"
+    }),
+  createMemberField: (input: { label: string; type: "Text" | "Email" | "Phone" | "Date" | "YesNo" | "File" }) =>
+    request<MemberField>("/api/member-fields", { method: "POST", body: JSON.stringify(input) }),
   groups: () => request<{ items: Group[] }>("/api/groups"),
   groupCriteria: () => request<{ items: GroupCriterion[] }>("/api/group-criteria"),
   createGroup: (input: { name: string; description: string; criterion: { fieldKey: string; values: string[] } }) =>
