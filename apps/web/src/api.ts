@@ -337,8 +337,10 @@ export const api = {
     request<MemberField>(`/api/member-fields/${encodeURIComponent(fieldKey)}/input`, { method: "PUT", body: JSON.stringify(input) }),
   groups: () => request<{ items: Group[] }>("/api/groups"),
   groupCriteria: () => request<{ items: GroupCriterion[] }>("/api/group-criteria"),
-  createGroup: (input: { name: string; description: string; criterion: { fieldKey: string; values: string[] } }) =>
+  createGroup: (input: { name: string; description: string; criterion: { fieldKey: string; values: string[] } | null }) =>
     request<Group>("/api/groups", { method: "POST", body: JSON.stringify(input) }),
+  addGroupMembers: (groupId: string, memberIds: string[]) =>
+    request<{ groupId: string; added: number }>(`/api/groups/${groupId}/members`, { method: "POST", body: JSON.stringify({ memberIds }) }),
   deleteGroup: (groupId: string) =>
     request<{ groupId: string; deleted: true }>(`/api/groups/${groupId}`, { method: "DELETE" }),
   setMemberGroups: (memberId: string, groupIds: string[]) =>

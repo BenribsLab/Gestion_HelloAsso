@@ -624,3 +624,15 @@ th { color: var(--ink-500); font-family: var(--font-mono); font-size: 11px; font
   .app-shell { display: block; background: none; }
   main { padding: 0; overflow: visible; }
 }
+
+/* Groupes libres : ajout d'adhérents depuis le groupe */
+.group-members-actions { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.add-group-members-bulk { display: flex; gap: 14px; }
+.add-group-members-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; max-height: 52vh; overflow-y: auto; }
+.add-group-members-list > label { display: flex; align-items: flex-start; gap: 9px; padding: 9px 11px; border: 1px solid var(--line); border-radius: 10px; background: var(--white); font-weight: 500; cursor: pointer; }
+.add-group-members-list > label:has(input:checked) { border-color: var(--ink-900); background: var(--lime-wash); }
+.add-group-members-list input { margin-top: 2px; }
+.add-group-members-list span { display: grid; gap: 1px; min-width: 0; }
+.add-group-members-list small { color: var(--ink-500); font-weight: 400; overflow-wrap: anywhere; }
+.add-group-members-count { font-size: 13.5px; }
+@media (max-width: 640px) { .add-group-members-list { grid-template-columns: 1fr; } }

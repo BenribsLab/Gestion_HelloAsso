@@ -88,11 +88,13 @@ server.addHook("preHandler", async (request, reply) => {
 const groupInputSchema = z.object({
   name: z.string().trim().min(2).max(80),
   description: z.string().trim().max(500).optional().default(""),
+  // Sans critère : groupe libre (bureau, maîtres d'armes…) dont les membres sont ajoutés à la main.
   criterion: z.object({
     fieldKey: z.string().min(1).max(100),
     values: z.array(z.string().trim().min(1).max(500)).min(1).max(100)
-  })
+  }).nullable().optional().default(null)
 });
+const groupMembersInputSchema = z.object({ memberIds: z.array(z.uuid()).min(1).max(1500) });
 const campaignSelectionSchema = z.object({
   formSlugs: z.array(z.string().min(1)).min(1).max(100)
 });
@@ -574,6 +576,16 @@ server.post("/api/groups", async (request, reply) => {
   const client = await database.connect();
   try {
     await client.query("BEGIN");
+    if (!input.criterion) {
+      const manual = await client.query<{ id: string; name: string; description: string | null; createdAt: Date }>(
+        `INSERT INTO groups (name, description, source)
+         VALUES ($1, NULLIF($2, ''), 'manual')
+         RETURNING id, name, description, created_at AS "createdAt"`,
+        [input.name, input.description]
+      );
+      await client.query("COMMIT");
+      return reply.code(201).send({ ...manual.rows[0]!, source: "manual", membersCount: 0, dynamicRule: null, trainingSchedules: [] });
+    }
     const criterion = await validateDynamicCriterion(client, input.criterion.fieldKey, input.criterion.values);
     if (!criterion) {
       await client.query("ROLLBACK");
@@ -616,6 +628,48 @@ server.post("/api/groups", async (request, reply) => {
     if (error && typeof error === "object" && "code" in error && error.code === "23505") {
       return reply.code(409).send({ message: "Un groupe porte déjà ce nom." });
     }
+    throw error;
+  } finally {
+    client.release();
+  }
+});
+
+// Ajoute des adhérents à un groupe sans toucher à leurs autres groupes.
+server.post("/api/groups/:groupId/members", async (request, reply) => {
+  const { groupId } = groupIdSchema.parse(request.params);
+  const input = groupMembersInputSchema.parse(request.body);
+  const memberIds = [...new Set(input.memberIds)];
+  const client = await database.connect();
+  try {
+    await client.query("BEGIN");
+    const group = await client.query("SELECT 1 FROM groups WHERE id = $1", [groupId]);
+    if (group.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return reply.code(404).send({ message: "Ce groupe n'existe pas." });
+    }
+    const members = await client.query(
+      "SELECT 1 FROM members WHERE id = ANY($1::uuid[]) AND locally_deleted_at IS NULL",
+      [memberIds]
+    );
+    if (members.rowCount !== memberIds.length) {
+      await client.query("ROLLBACK");
+      return reply.code(400).send({ message: "Un des adhérents choisis n'existe plus." });
+    }
+    // Un ajout manuel l'emporte sur une exclusion précédente de ce même groupe.
+    await client.query(
+      "DELETE FROM member_group_exclusions WHERE group_id = $1 AND member_id = ANY($2::uuid[])",
+      [groupId, memberIds]
+    );
+    const inserted = await client.query(
+      `INSERT INTO member_groups (member_id, group_id, source)
+       SELECT member_id, $1, 'manual' FROM unnest($2::uuid[]) AS added(member_id)
+       ON CONFLICT (member_id, group_id) DO NOTHING`,
+      [groupId, memberIds]
+    );
+    await client.query("COMMIT");
+    return { groupId, added: inserted.rowCount ?? 0 };
+  } catch (error) {
+    await client.query("ROLLBACK");
     throw error;
   } finally {
     client.release();

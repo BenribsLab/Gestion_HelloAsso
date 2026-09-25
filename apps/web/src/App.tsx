@@ -129,7 +129,7 @@ export function App() {
       await api.createGroup({
         name: groupName,
         description: groupDescription,
-        criterion: { fieldKey: groupCriterionKey, values: [...groupCriterionValues] }
+        criterion: groupCriterionKey ? { fieldKey: groupCriterionKey, values: [...groupCriterionValues] } : null
       });
       setGroupName("");
       setGroupDescription("");
@@ -1662,6 +1662,8 @@ function Groups({
   const [editingDraft, setEditingDraft] = useState<MemberDraft | null>(null);
   const [editingGroups, setEditingGroups] = useState<Set<string>>(new Set());
   const [createOpen, setCreateOpen] = useState(false);
+  const [groupMode, setGroupMode] = useState<"manual" | "dynamic">("manual");
+  const [addingMembers, setAddingMembers] = useState(false);
   const [groupTab, setGroupTab] = useState<"members" | "settings">("members");
   const [memberSearch, setMemberSearch] = useState("");
   const [memberPage, setMemberPage] = useState(1);
@@ -1775,14 +1777,20 @@ function Groups({
         )}
       </section>
 
-      {createOpen && <Modal title="Créer un groupe" eyebrow="Nouveau groupe automatique" onClose={() => setCreateOpen(false)}>
+      {createOpen && <Modal title="Créer un groupe" eyebrow="Nouveau groupe" onClose={() => setCreateOpen(false)}>
         <form className="modal-form" onSubmit={(event) => void submitNewGroup(event)}>
-          <label>Nom<input autoFocus required minLength={2} maxLength={80} value={groupName} onChange={(e) => onNameChange(e.target.value)} placeholder="Ex. M15 compétition" /></label>
-          <label>Description<textarea maxLength={500} rows={3} value={groupDescription} onChange={(e) => onDescriptionChange(e.target.value)} placeholder="Créneaux, niveau ou remarques…" /></label>
-          <label>Critère<select required value={groupCriterionKey} onChange={(event) => onCriterionChange(event.target.value)}><option value="">Choisir un critère…</option><optgroup label="Données HelloAsso">{groupCriteria.filter((criterion) => criterion.source === "helloasso").map((criterion) => <option key={criterion.key} value={criterion.key}>{criterion.label}</option>)}</optgroup><optgroup label="Donnée calculée localement">{groupCriteria.filter((criterion) => criterion.source === "calculated").map((criterion) => <option key={criterion.key} value={criterion.key}>{criterion.label}</option>)}</optgroup></select></label>
-          {selectedCriterion && <fieldset className="criterion-values"><legend>Valeur{selectedCriterion.values.length > 1 ? "s" : ""} à inclure</legend>{selectedCriterion.values.length === 0 ? <p className="empty-inline">Aucune valeur disponible pour ce critère.</p> : <div>{selectedCriterion.values.map((entry) => <label key={entry.value}><input type="checkbox" checked={groupCriterionValues.has(entry.value)} onChange={() => onCriterionValueToggle(entry.value)} /><span>{entry.value}<small>{entry.count} adhérent{entry.count > 1 ? "s" : ""}</small></span></label>)}</div>}</fieldset>}
-          <p className="group-rule-hint">La composition sera recalculée après chaque import ou correction locale. Les déplacements manuels resteront prioritaires.</p>
-          <div className="modal-actions"><button className="secondary" type="button" onClick={() => setCreateOpen(false)}>Annuler</button><button className="primary" disabled={creating || !groupName.trim() || !groupCriterionKey || groupCriterionValues.size === 0} type="submit">{creating ? "Création…" : "Créer et remplir"}</button></div>
+          <div className="option-grid" role="radiogroup" aria-label="Type de groupe">
+            <label><input type="radio" name="group-mode" checked={groupMode === "manual"} onChange={() => { setGroupMode("manual"); onCriterionChange(""); }} /><strong>Groupe libre</strong><small>Bureau, maîtres d'armes… vous choisissez les membres.</small></label>
+            <label><input type="radio" name="group-mode" checked={groupMode === "dynamic"} onChange={() => setGroupMode("dynamic")} /><strong>Groupe automatique</strong><small>Rempli selon un critère, recalculé à chaque import.</small></label>
+          </div>
+          <label>Nom<input autoFocus required minLength={2} maxLength={80} value={groupName} onChange={(e) => onNameChange(e.target.value)} placeholder={groupMode === "manual" ? "Ex. Bureau, Maîtres d'armes" : "Ex. M15 compétition"} /></label>
+          <label>Description<textarea maxLength={500} rows={3} value={groupDescription} onChange={(e) => onDescriptionChange(e.target.value)} placeholder="Rôle, créneaux ou remarques…" /></label>
+          {groupMode === "dynamic" && <label>Critère<select required value={groupCriterionKey} onChange={(event) => onCriterionChange(event.target.value)}><option value="">Choisir un critère…</option><optgroup label="Données HelloAsso">{groupCriteria.filter((criterion) => criterion.source === "helloasso").map((criterion) => <option key={criterion.key} value={criterion.key}>{criterion.label}</option>)}</optgroup><optgroup label="Donnée calculée localement">{groupCriteria.filter((criterion) => criterion.source === "calculated").map((criterion) => <option key={criterion.key} value={criterion.key}>{criterion.label}</option>)}</optgroup></select></label>}
+          {groupMode === "dynamic" && selectedCriterion && <fieldset className="criterion-values"><legend>Valeur{selectedCriterion.values.length > 1 ? "s" : ""} à inclure</legend>{selectedCriterion.values.length === 0 ? <p className="empty-inline">Aucune valeur disponible pour ce critère.</p> : <div>{selectedCriterion.values.map((entry) => <label key={entry.value}><input type="checkbox" checked={groupCriterionValues.has(entry.value)} onChange={() => onCriterionValueToggle(entry.value)} /><span>{entry.value}<small>{entry.count} adhérent{entry.count > 1 ? "s" : ""}</small></span></label>)}</div>}</fieldset>}
+          <p className="group-rule-hint">{groupMode === "manual"
+            ? "Après la création, ajoutez les membres depuis le groupe. Ils restent aussi dans leurs autres groupes."
+            : "La composition sera recalculée après chaque import ou correction locale. Les déplacements manuels resteront prioritaires."}</p>
+          <div className="modal-actions"><button className="secondary" type="button" onClick={() => setCreateOpen(false)}>Annuler</button><button className="primary" disabled={creating || !groupName.trim() || (groupMode === "dynamic" && (!groupCriterionKey || groupCriterionValues.size === 0))} type="submit">{creating ? "Création…" : groupMode === "manual" ? "Créer le groupe" : "Créer et remplir"}</button></div>
         </form>
       </Modal>}
 
@@ -1794,6 +1802,7 @@ function Groups({
         <div className="tabs" role="tablist"><button className={groupTab === "members" ? "active" : ""} type="button" onClick={() => setGroupTab("members")}>Membres <span>{groupMembers.length}</span></button><button className={groupTab === "settings" ? "active" : ""} type="button" onClick={() => setGroupTab("settings")}>{groupPanels.length > 0 ? "Créneaux et réglages" : "Réglages"}</button></div>
 
         {groupTab === "members" && <div className="group-members-view">
+          <div className="group-members-actions"><button className="primary compact-button" type="button" onClick={() => setAddingMembers(true)}>+ Ajouter des adhérents</button></div>
           {groupMembers.length === 0 ? <EmptyState title="Groupe vide" text="Aucun adhérent n'appartient actuellement à ce groupe." /> : <>
             <div className="list-toolbar">
               <ListSearch value={memberSearch} onChange={setMemberSearch} placeholder="Rechercher dans ce groupe…" />
@@ -1838,12 +1847,74 @@ function Groups({
         </div>}
       </Modal>}
 
+      {selectedGroup && addingMembers && <Modal title={`Ajouter à « ${selectedGroup.name} »`} eyebrow="Membres du groupe" size="large" onClose={() => setAddingMembers(false)}>
+        <AddGroupMembers
+          group={selectedGroup}
+          members={members}
+          onCancel={() => setAddingMembers(false)}
+          onAdded={async () => { await onDocumentsChanged(); setAddingMembers(false); }}
+        />
+      </Modal>}
+
       {editingMemberId && editingDraft && (() => {
         const member = members.find((item) => item.id === editingMemberId);
         return member ? <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Fiche adhérent" onClose={() => setEditingMemberId(null)} size="large" variant="drawer"><MemberEditor member={member} draft={editingDraft} groups={groups} selection={editingGroups} saving={savingMemberId === member.id} onDraftChange={setEditingDraft} onToggle={(groupId) => setEditingGroups((current) => toggledSet(current, groupId))} onCancel={() => setEditingMemberId(null)} onSave={() => void saveMember(member.id)} onDelete={() => void onDeleteMember(member).then((deleted) => { if (deleted) setEditingMemberId(null); })} onRevert={(fieldKey) => void revertMember(member.id, fieldKey)} onDocumentsChanged={onDocumentsChanged} onMemberAction={onMemberAction} memberActions={memberActions} documentPanels={documentPanels} memberDetailPanels={memberDetailPanels} /></Modal> : null;
       })()}
     </div>
   );
+}
+
+/** Choix d'adhérents à ajouter : ils restent aussi dans leurs autres groupes. */
+function AddGroupMembers({ group, members, onCancel, onAdded }: {
+  group: Group;
+  members: Member[];
+  onCancel: () => void;
+  onAdded: () => Promise<void>;
+}) {
+  const [search, setSearch] = useState("");
+  const [selection, setSelection] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const candidates = useMemo(() => members.filter((member) => !member.groups.some((entry) => entry.id === group.id)), [members, group.id]);
+  const visible = candidates.filter((member) => includesText(
+    `${member.lastName} ${member.firstName} ${member.email ?? ""} ${member.groups.map((entry) => entry.name).join(" ")}`,
+    search
+  ));
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true); setError(null);
+    try {
+      await api.addGroupMembers(group.id, [...selection]);
+      await onAdded();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Impossible d'ajouter ces adhérents.");
+      setBusy(false);
+    }
+  }
+
+  return <form className="modal-form add-group-members" onSubmit={(event) => void submit(event)}>
+    {error && <div className="alert error">{error}</div>}
+    <div className="list-toolbar">
+      <ListSearch value={search} onChange={setSearch} placeholder="Rechercher un nom, un e-mail, un groupe…" />
+      <div className="add-group-members-bulk">
+        <button className="link-button" type="button" disabled={visible.length === 0} onClick={() => setSelection((current) => new Set([...current, ...visible.map((member) => member.id)]))}>Tout sélectionner</button>
+        <button className="link-button" type="button" disabled={selection.size === 0} onClick={() => setSelection(new Set())}>Effacer</button>
+      </div>
+    </div>
+    {candidates.length === 0 ? <p className="empty-inline">Tous les adhérents font déjà partie de ce groupe.</p>
+      : visible.length === 0 ? <p className="empty-inline">Aucun adhérent ne correspond à la recherche.</p>
+      : <div className="add-group-members-list">{visible.map((member) => <label key={member.id}>
+        <input type="checkbox" checked={selection.has(member.id)} onChange={() => setSelection((current) => toggledSet(current, member.id))} />
+        <span><strong>{member.lastName} {member.firstName}</strong><small>{member.groups.length ? `Déjà dans : ${member.groups.map((entry) => entry.name).join(", ")}` : "Aucun groupe"}</small></span>
+      </label>)}</div>}
+    <div className="modal-actions">
+      <span className="muted add-group-members-count">{selection.size} sélectionné{selection.size > 1 ? "s" : ""}</span>
+      <span className="editor-actions-spacer" />
+      <button className="secondary" type="button" onClick={onCancel}>Annuler</button>
+      <button className="primary" type="submit" disabled={busy || selection.size === 0}>{busy ? "Ajout…" : `Ajouter ${selection.size || ""}`.trim()}</button>
+    </div>
+  </form>;
 }
 
 function GroupBadges({ groups }: { groups: Array<{ id: string; name: string }> }) {
