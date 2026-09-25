@@ -78,6 +78,8 @@ export type EntitlementDecision = {
 
 export interface EntitlementProvider {
   check(manifest: ExtensionManifest): Promise<EntitlementDecision>;
+  /** Déclare au serveur central les extensions installées et leurs versions. */
+  reportInstalled?(manifests: ExtensionManifest[]): Promise<void>;
 }
 
 class LocalEntitlementProvider implements EntitlementProvider {
@@ -145,6 +147,30 @@ class CentralEntitlementProvider implements EntitlementProvider {
     if (!response.ok) return null;
     const body = await response.json() as { tokens?: Record<string, string> };
     return body.tokens?.[manifest.id] ?? null;
+  }
+
+  /**
+   * Au démarrage : une seule requête pour toutes les extensions installées. Le serveur central
+   * mémorise les versions (affichées dans son administration) et renvoie les jetons, conservés
+   * en cache comme lors d'une vérification normale.
+   */
+  async reportInstalled(manifests: ExtensionManifest[]) {
+    const catalogUrl = this.config.extensions.catalogUrl;
+    const licenseToken = this.config.extensions.licenseToken;
+    if (!catalogUrl || !licenseToken || manifests.length === 0) return;
+    const response = await fetch(new URL("/entitlements/check", catalogUrl), {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${licenseToken}` },
+      body: JSON.stringify({
+        installationId: await this.installationId(),
+        coreVersion: "0.1.0",
+        extensions: manifests.map((manifest) => ({ id: manifest.id, version: manifest.version, entitlementKey: manifest.entitlementKey }))
+      }),
+      signal: AbortSignal.timeout(10_000)
+    });
+    if (!response.ok) return;
+    const body = await response.json() as { tokens?: Record<string, string> };
+    for (const [extensionId, token] of Object.entries(body.tokens ?? {})) await this.writeCache(extensionId, token);
   }
 
   /** Identifiant d'installation anonyme, généré une fois et conservé localement. */
@@ -247,6 +273,11 @@ export class ExtensionRegistry {
 
   manifest(extensionId: string) {
     return this.manifests.get(extensionId) ?? null;
+  }
+
+  /** Sans effet en fonctionnement local ; une panne du serveur central n'est jamais bloquante. */
+  async reportInstalledVersions() {
+    await this.entitlements.reportInstalled?.([...this.manifests.values()]);
   }
 
   /** Vérifie un droit avant d'installer ou de mettre à jour un paquet. */

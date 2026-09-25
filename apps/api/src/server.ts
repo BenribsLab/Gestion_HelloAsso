@@ -70,6 +70,8 @@ await server.register(websocket);
 await prepareAuthentication(database, config);
 await installSecurity(server, database, config);
 const extensions = await ExtensionRegistry.create(database, config);
+// Déclare les versions installées au serveur central (affichées dans son administration).
+void extensions.reportInstalledVersions().catch((error: unknown) => server.log.warn({ error }, "Déclaration des extensions au serveur central impossible."));
 const contracts = new ExtensionContracts();
 configureDynamicGroups({ contracts, isExtensionEnabled: (id) => extensions.isEnabled(id) });
 await loadExtensions({ server, database, config, contracts, registry: extensions, helloasso, settings: secureSettings });
