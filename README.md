@@ -128,10 +128,10 @@ L'onglet **Messages** envoie les e-mails par le compte SMTP configuré dans `.en
 SMTP_HOST=smtp.mail.ovh.net
 SMTP_PORT=587
 SMTP_SECURE=false
-SMTP_USER=no-reply@escrime-cey.fr
+SMTP_USER=no-reply@exemple.fr
 SMTP_PASSWORD=mot-de-passe-de-la-boite
-SMTP_FROM_EMAIL=no-reply@escrime-cey.fr
-SMTP_FROM_NAME=Cercle d'Escrime de Yerres
+SMTP_FROM_EMAIL=no-reply@exemple.fr
+SMTP_FROM_NAME=Cercle d'Escrime de la-bas
 SMTP_REPLY_TO=
 ```
 
