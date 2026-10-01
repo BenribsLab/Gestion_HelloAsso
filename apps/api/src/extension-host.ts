@@ -41,6 +41,9 @@ export interface ExtensionRequest {
   params: unknown;
   query: unknown;
   url: string;
+  /** En-têtes HTTP (noms en minuscules) : utile à une API publique authentifiée par clé. */
+  headers: Record<string, string | string[] | undefined>;
+  ip?: string;
   authUser?: { id: string | null; email?: string } | null;
 }
 

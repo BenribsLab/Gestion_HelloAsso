@@ -81,6 +81,10 @@ export async function installSecurity(server: FastifyInstance, database: Databas
   server.addHook("preHandler", async (request, reply) => {
     const path = request.url.split("?", 1)[0] ?? request.url;
     if (path === "/api/health") return;
+    // API publique pour les applications tierces (site du club…) : pas de session ni de
+    // cookie ; l'extension qui la fournit authentifie chaque appel par une clé API. Seules les
+    // extensions déclarant la capacité « public-api » peuvent y enregistrer des routes.
+    if (path.startsWith("/api/v1/")) return;
     if (!config.auth.enabled) {
       request.authUser = { id: null, email: "local@localhost", displayName: "Administrateur local", role: "admin" };
       request.csrfToken = "local-development";

@@ -117,11 +117,15 @@ export type MemberFieldRequirement = {
  * Contrats déclarés par les extensions et consultés par le noyau. Chaque extension
  * s'enregistre ici au démarrage ; le noyau ne référence plus son identifiant en dur.
  */
+export type TransactionalMail = { to: string; subject: string; text: string; html?: string };
+export type MailProvider = { extensionId: string; send(mail: TransactionalMail): Promise<void> };
+
 export class ExtensionContracts {
   readonly irlTargets = new FeatureGateRegistry();
   private memberCategoryProvider: MemberCategoryProvider | null = null;
   private groupScheduleProvider: GroupScheduleProvider | null = null;
   private healthDocumentProvider: HealthDocumentProvider | null = null;
+  private mailProvider: MailProvider | null = null;
   private readonly groupCriterionProviders = new Map<string, GroupCriterionProvider>();
   private readonly memberFieldRequirements = new Map<string, MemberFieldRequirement[]>();
 
@@ -212,5 +216,26 @@ export class ExtensionContracts {
     if (!provider || !isExtensionEnabled(provider.extensionId)) return null;
     const result = await provider.analyze(document, knownHash);
     return { ...result, analysisVersion: provider.analysisVersion };
+  }
+
+  /**
+   * Envoi d'un e-mail transactionnel (code de vérification…) par le service de messagerie du
+   * club, quand une extension en fournit un (Messagerie Mail) et qu'elle est active.
+   */
+  registerMailProvider(provider: MailProvider) {
+    this.mailProvider = provider;
+  }
+
+  canSendMail(isExtensionEnabled: (extensionId: string) => boolean) {
+    const provider = this.mailProvider;
+    return Boolean(provider && isExtensionEnabled(provider.extensionId));
+  }
+
+  async sendMail(mail: TransactionalMail, isExtensionEnabled: (extensionId: string) => boolean) {
+    const provider = this.mailProvider;
+    if (!provider || !isExtensionEnabled(provider.extensionId)) {
+      throw new Error("Aucun service d'envoi d'e-mail n'est disponible : activez l'extension Messagerie Mail.");
+    }
+    await provider.send(mail);
   }
 }

@@ -144,6 +144,10 @@ function buildHost(options: LoadOptions, manifest: ExtensionManifest): Extension
           `Le module ${manifest.id} tente d'enregistrer ${path}, hors des préfixes déclarés.`
         );
       }
+      // /api/v1/ échappe à la session : réservé aux modules qui l'annoncent et s'authentifient eux-mêmes.
+      if (path.startsWith("/api/v1/") && !manifest.capabilities.includes("public-api")) {
+        throw new Error(`Le module ${manifest.id} doit déclarer la capacité public-api pour exposer ${path}.`);
+      }
       options.server.route({
         method,
         url: path,
