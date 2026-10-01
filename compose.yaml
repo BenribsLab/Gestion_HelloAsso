@@ -49,7 +49,7 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
-      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Cercle d'Escrime de Yerres}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Gestion Asso}
       SMTP_REPLY_TO: ${SMTP_REPLY_TO:-}
       EXTENSIONS_BUNDLED_DIRECTORY: /app/bundled-plugins
       EXTENSIONS_DIRECTORY: /app/plugins

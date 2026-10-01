@@ -479,5 +479,5 @@ export type MemberAttestationState = {
   recipientEmail: string;
   missing: string[];
   mailAvailable: boolean;
-  history: Array<{ createdAt: string; delivery: "download" | "email"; recipientEmail: string | null; season: string }>;
+  history: Array<{ createdAt: string; delivery: "download" | "email"; recipientEmail: string | null; season: string; reference: string | null }>;
 };

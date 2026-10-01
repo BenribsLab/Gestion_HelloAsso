@@ -506,7 +506,7 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
 
   return <main className="login-screen">
     <section className="login-card">
-      <div className="login-brand"><span className="brand-mark">g</span><div><strong>Gestion Asso</strong><small>Cercle d'Escrime de Yerres</small></div></div>
+      <div className="login-brand"><span className="brand-mark">g</span><div><strong>Gestion Asso</strong><small>Espace privé du club</small></div></div>
       <div><p className="eyebrow">Espace privé</p><h1>Connexion</h1><p className="muted">Accès réservé aux responsables autorisés du club.</p></div>
       {error && <div className="alert error" role="alert">{error}</div>}
       <form onSubmit={submit}>

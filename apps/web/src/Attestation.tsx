@@ -86,7 +86,7 @@ export function MemberAttestation({ memberId, onClose }: { memberId: string; onC
     <label>Envoyer à<input type="email" value={recipient} placeholder="adresse@exemple.fr" onChange={(event) => setRecipient(event.target.value)} /><small>{state.mailAvailable ? "E-mail du payeur, à défaut celui de l’adhérent." : "Envoi par e-mail indisponible : activez et configurez l’extension Messagerie Mail."}</small></label>
 
     {state.history.length > 0 && <details className="attestation-history"><summary>Déjà délivrées ({state.history.length})</summary><ul className="list-rows">{state.history.map((entry) => <li key={`${entry.createdAt}-${entry.delivery}`}>
-      <div><strong>{entry.delivery === "email" ? `Envoyée à ${entry.recipientEmail}` : "Téléchargée"}</strong><small>Saison {entry.season}</small></div>
+      <div><strong>{entry.delivery === "email" ? `Envoyée à ${entry.recipientEmail}` : "Téléchargée"}</strong><small>{entry.reference ? `Réf. ${entry.reference} · ` : ""}Saison {entry.season}</small></div>
       <time dateTime={entry.createdAt}>{new Intl.DateTimeFormat("fr-FR", { dateStyle: "short", timeStyle: "short" }).format(new Date(entry.createdAt))}</time>
     </li>)}</ul></details>}
 

@@ -23,7 +23,7 @@ const environmentSchema = z.object({
   SMTP_PASSWORD: z.string().optional().default(""),
   SMTP_PASSWORD_FILE: z.string().trim().optional().default(""),
   SMTP_FROM_EMAIL: z.union([z.email(), z.literal("")]).optional().default(""),
-  SMTP_FROM_NAME: z.string().trim().max(100).default("Cercle d'Escrime de Yerres"),
+  SMTP_FROM_NAME: z.string().trim().max(100).default("Gestion Asso"),
   SMTP_REPLY_TO: z.union([z.email(), z.literal("")]).optional().default(""),
   AUTH_ENABLED: z.enum(["true", "false"]).default("false"),
   APP_ORIGIN: z.url().default("http://localhost:18473"),

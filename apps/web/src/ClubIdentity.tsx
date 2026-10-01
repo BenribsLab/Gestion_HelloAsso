@@ -64,12 +64,12 @@ export function ClubIdentityPanel() {
     {error && <div className="alert error">{error}</div>}
     {message && <div className="alert success">{message}</div>}
     <form className="club-identity-form" onSubmit={(event) => void save(event)}>
-      <label>Nom du club<input maxLength={150} placeholder="Cercle d’Escrime de Yerres" {...field("clubName")} /></label>
-      <label>Ville<input maxLength={100} placeholder="Yerres" {...field("city")} /><small>Pour « Yerres, le 01/10/2026 ».</small></label>
-      <label>Signataire<input maxLength={120} placeholder="Madame Audrey Bouygard" {...field("signatoryName")} /><small>Commencez par Madame ou Monsieur pour accorder « Je soussigné(e) ».</small></label>
-      <label>Qualité du signataire<input maxLength={200} placeholder="présidente du Cercle d’Escrime de Yerres" {...field("signatoryRole")} /><small>Suit le nom : « …, présidente du Cercle d’Escrime de Yerres, certifie que… ».</small></label>
+      <label>Nom du club<input maxLength={150} placeholder="Cercle d’Escrime de Valmont" {...field("clubName")} /></label>
+      <label>Ville<input maxLength={100} placeholder="Valmont" {...field("city")} /><small>Pour « Fait à Valmont, le … ».</small></label>
+      <label>Signataire<input maxLength={120} placeholder="Madame Claire Martin" {...field("signatoryName")} /><small>Commencez par Madame ou Monsieur pour accorder « Je soussigné(e) ».</small></label>
+      <label>Qualité du signataire<input maxLength={200} placeholder="présidente du Cercle d’Escrime de Valmont" {...field("signatoryRole")} /><small>Suit le nom : « …, présidente du Cercle d’Escrime de Valmont, certifie que… ».</small></label>
       <label>Intitulé au-dessus de la signature<input maxLength={80} placeholder="La Présidente" {...field("signatureLabel")} /></label>
-      <label>Nom sous la signature<input maxLength={120} placeholder="Audrey BOUYGARD" {...field("signatureName")} /></label>
+      <label>Nom sous la signature<input maxLength={120} placeholder="Claire MARTIN" {...field("signatureName")} /></label>
       <div className="club-identity-actions"><button className="primary" type="submit" disabled={busy !== null}>{busy === "save" ? "Enregistrement…" : "Enregistrer"}</button></div>
     </form>
     <div className="club-assets">

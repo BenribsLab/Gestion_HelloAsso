@@ -110,7 +110,7 @@ export function registerAttestationRoutes(options: {
     if (!member) return reply.code(404).send({ message: "Cet adhérent n'existe pas." });
     const identity = await readIdentity(database);
     const history = await database.query(
-      `SELECT created_at AS "createdAt", delivery, recipient_email AS "recipientEmail", season
+      `SELECT created_at AS "createdAt", delivery, recipient_email AS "recipientEmail", season, reference
        FROM member_attestations WHERE member_id = $1 ORDER BY created_at DESC LIMIT 10`,
       [memberId]
     );
@@ -137,8 +137,8 @@ export function registerAttestationRoutes(options: {
     const { memberId } = memberParamsSchema.parse(request.params);
     const input = attestationSchema.parse(request.body);
     if (!(await readMember(database, memberId))) return reply.code(404).send({ message: "Cet adhérent n'existe pas." });
-    const pdf = await buildAttestation(database, input);
-    await recordAttestation(database, memberId, request.authUser?.id ?? null, "download", null, input);
+    const reference = await recordAttestation(database, memberId, request.authUser?.id ?? null, "download", null, input);
+    const pdf = await buildAttestation(database, input, reference);
     reply.header("Content-Type", "application/pdf");
     reply.header("Content-Length", pdf.length);
     reply.header("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(attestationFileName(input))}`);
@@ -155,7 +155,8 @@ export function registerAttestationRoutes(options: {
       return reply.code(409).send({ message: "L'envoi par e-mail nécessite l'extension Messagerie Mail, active et configurée." });
     }
     const identity = await readIdentity(database);
-    const pdf = await buildAttestation(database, input);
+    const reference = await recordAttestation(database, memberId, request.authUser?.id ?? null, "email", input.to, input);
+    const pdf = await buildAttestation(database, input, reference);
     const signer = identity.signatureName || identity.clubName;
     try {
       await contracts.sendMail({
@@ -173,9 +174,9 @@ export function registerAttestationRoutes(options: {
         attachments: [{ filename: attestationFileName(input), content: pdf, contentType: "application/pdf" }]
       }, isExtensionEnabled);
     } catch (error) {
+      await database.query("DELETE FROM member_attestations WHERE reference = $1", [reference]);
       return reply.code(502).send({ message: error instanceof Error ? error.message : "L'e-mail n'a pas pu être envoyé." });
     }
-    await recordAttestation(database, memberId, request.authUser?.id ?? null, "email", input.to, input);
     return { sent: true, to: input.to };
   });
 }
@@ -244,12 +245,16 @@ async function recordAttestation(
   delivery: "download" | "email",
   recipientEmail: string | null,
   input: AttestationInput
-) {
-  await database.query(
-    `INSERT INTO member_attestations (member_id, issued_by, delivery, recipient_email, season, amount_cents)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
+): Promise<string> {
+  // Référence lisible et unique : année + numéro d'ordre (ex. 2026-0042).
+  const result = await database.query<{ reference: string }>(
+    `INSERT INTO member_attestations (member_id, issued_by, delivery, recipient_email, season, amount_cents, reference)
+     VALUES ($1, $2, $3, $4, $5, $6,
+       to_char(now(), 'YYYY') || '-' || lpad(nextval('member_attestation_number')::text, 4, '0'))
+     RETURNING reference`,
     [memberId, userId, delivery, recipientEmail, input.season, input.amount === null ? null : Math.round(input.amount * 100)]
   );
+  return result.rows[0]!.reference;
 }
 
 /** Saison sportive : de septembre à août. */
@@ -272,7 +277,7 @@ function attestationFileName(input: AttestationInput) {
 
 // ---------- PDF ----------------------------------------------------------------------------
 
-async function buildAttestation(database: Database, input: AttestationInput) {
+async function buildAttestation(database: Database, input: AttestationInput, reference: string) {
   const identity = await readIdentity(database);
   const [logoAsset, signatureAsset, stampAsset] = await Promise.all(assetKinds.map((kind) => readAsset(database, kind)));
   const pdf = await PDFDocument.create();
@@ -285,64 +290,158 @@ async function buildAttestation(database: Database, input: AttestationInput) {
     !asset ? null : asset.mediaType === "image/png" ? pdf.embedPng(asset.content) : pdf.embedJpg(asset.content);
   const [logo, signature, stamp] = await Promise.all([embed(logoAsset), embed(signatureAsset), embed(stampAsset)]);
 
-  const margin = 64;
-  const width = page.getWidth() - margin * 2;
-  const ink = rgb(0.08, 0.12, 0.12);
-  let y = page.getHeight() - margin;
+  const pageWidth = page.getWidth();
+  const pageHeight = page.getHeight();
+  const margin = 62;
+  const width = pageWidth - margin * 2;
+  const ink = rgb(0.07, 0.11, 0.12);
+  const muted = rgb(0.42, 0.47, 0.47);
+  const line = rgb(0.84, 0.87, 0.85);
+  const band = rgb(0.04, 0.15, 0.16);
 
-  // En-tête : logo à gauche, nom du club à côté (ou centré sans logo).
+  // En-tête : bandeau sombre pleine largeur, logo sur pastille blanche, nom du club, référence.
+  const bandHeight = 104;
+  page.drawRectangle({ x: 0, y: pageHeight - bandHeight, width: pageWidth, height: bandHeight, color: band });
+  let nameX = margin;
   if (logo) {
-    const size = fit(logo, 86, 86);
-    page.drawImage(logo, { x: margin, y: y - size.height, ...size });
-    drawWrapped(page, identity.clubName, { x: margin + size.width + 18, y: y - size.height / 2 + 6, width: width - size.width - 18, font: bold, size: 19, lineHeight: 23, color: ink });
-    y -= Math.max(size.height, 40) + 18;
-  } else {
-    y = drawWrapped(page, identity.clubName, { x: margin, y: y - 14, width, font: bold, size: 20, lineHeight: 24, color: ink, align: "center" }) - 14;
+    const box = 72;
+    page.drawRectangle({ x: margin, y: pageHeight - bandHeight / 2 - box / 2, width: box, height: box, color: rgb(1, 1, 1) });
+    const size = fit(logo, box - 12, box - 12);
+    page.drawImage(logo, { x: margin + (box - size.width) / 2, y: pageHeight - bandHeight / 2 - size.height / 2, ...size });
+    nameX = margin + box + 20;
   }
-  page.drawLine({ start: { x: margin, y }, end: { x: margin + width, y }, thickness: 0.8, color: rgb(0.75, 0.8, 0.78) });
-  y -= 56;
+  const nameWidth = pageWidth - margin - nameX - 150;
+  const clubLines = wrapRuns([{ text: identity.clubName || "Club", font: bold }], nameWidth, 18);
+  let nameY = pageHeight - bandHeight / 2 + (clubLines.length - 1) * 11 + 2;
+  for (const current of clubLines) {
+    drawRunLine(page, current, nameX, nameY, 18, rgb(1, 1, 1));
+    nameY -= 22;
+  }
+  if (identity.city) page.drawText(safeText(identity.city.toUpperCase(), regular), { x: nameX, y: nameY - 2, size: 8.5, font: regular, color: rgb(0.68, 0.76, 0.74) });
+  const referenceText = `Réf. ${reference}`;
+  page.drawText(safeText(referenceText, regular), {
+    x: pageWidth - margin - regular.widthOfTextAtSize(referenceText, 9), y: pageHeight - bandHeight / 2 - 3,
+    size: 9, font: regular, color: rgb(0.68, 0.76, 0.74)
+  });
 
-  y = drawWrapped(page, "ATTESTATION DE LICENCE ANNUELLE ACQUITTÉE", { x: margin, y, width, font: bold, size: 15, lineHeight: 20, color: ink, align: "center" }) - 40;
+  // Titre
+  let y = pageHeight - bandHeight - 66;
+  page.drawText("ATTESTATION", { x: margin, y, size: 26, font: bold, color: ink });
+  y -= 22;
+  page.drawText(safeText(`Licence annuelle acquittée · Saison ${input.season}`, regular), { x: margin, y, size: 12, font: regular, color: muted });
+  y -= 18;
+  page.drawRectangle({ x: margin, y, width: 46, height: 3, color: rgb(0.66, 0.81, 0.11) });
+  y -= 44;
 
-  const memberName = `${input.memberCivility ? `${input.memberCivility} ` : ""}${input.lastName} ${input.firstName}`;
-  const agree = input.memberCivility === "Mme" ? "e" : input.memberCivility === "M." ? "" : "(e)";
+  // Corps : une seule phrase, l'adhérent et la saison en gras. Formulation identique pour une
+  // fille ou un garçon (« membre », « titulaire »), sans « (e) ».
   const signatoryAgree = /^(madame|mme)\b/i.test(identity.signatoryName) ? "e" : /^(monsieur|m\.)\s/i.test(identity.signatoryName) ? "" : "(e)";
-  const payerName = [input.payerCivility, input.payerFirstName, input.payerLastName].filter(Boolean).join(" ");
-  const amountText = input.amount === null ? null : `${input.amount.toLocaleString("fr-FR", { minimumFractionDigits: Number.isInteger(input.amount) ? 0 : 2, maximumFractionDigits: 2 })} euros`;
-  const body = { x: margin, width, font: regular, size: 12, lineHeight: 19, color: ink };
+  const memberName = `${input.memberCivility ? `${input.memberCivility} ` : ""}${input.firstName} ${input.lastName.toUpperCase()}`;
+  const paragraph: Run[] = [
+    { text: `Je soussigné${signatoryAgree}, ${identity.signatoryName}, ${identity.signatoryRole}, certifie que `, font: regular },
+    { text: memberName, font: bold },
+    { text: " est membre de notre club pour la saison ", font: regular },
+    { text: input.season, font: bold },
+    { text: ", et à ce titre titulaire d’une licence de la Fédération française d’escrime.", font: regular }
+  ];
+  for (const current of wrapRuns(paragraph, width, 12.5)) {
+    drawRunLine(page, current, margin, y, 12.5, ink);
+    y -= 20;
+  }
+  y -= 18;
 
-  y = drawWrapped(page, `Je soussigné${signatoryAgree}, ${identity.signatoryName}, ${identity.signatoryRole}, certifie que ${memberName}`, { ...body, y }) - 12;
-  y = drawWrapped(page, `est affilié${agree} à notre club pour la saison ${input.season}`, { ...body, y }) - 12;
-  y = drawWrapped(page, `et donc licencié${agree} à ce titre à la Fédération française d’escrime.`, { ...body, y }) - 26;
-  const paidLine = amountText
-    ? `Cotisation acquittée : ${amountText}${payerName ? `, réglée par ${payerName}` : ""}.`
-    : `Cotisation acquittée${payerName ? `, réglée par ${payerName}` : ""}.`;
-  y = drawWrapped(page, paidLine, { ...body, y, font: bold }) - 32;
-  y = drawWrapped(page, "La présente attestation est établie pour servir et valoir ce que de droit.", { ...body, y }) - 30;
-  y = drawWrapped(page, `${identity.city ? `${identity.city}, le` : "Le"} ${frenchDate(input.date)}`, { ...body, y }) - 40;
+  // Encadré récapitulatif
+  const payerName = [input.payerCivility, input.payerFirstName, input.payerLastName.toUpperCase()].filter(Boolean).join(" ").trim();
+  const amountText = input.amount === null ? "Acquittée" : `${input.amount.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+  const rows: Array<[string, string]> = [
+    ["Adhérent", memberName],
+    ["Saison", input.season],
+    ["Cotisation acquittée", amountText],
+    ...(payerName ? [["Réglée par", payerName] as [string, string]] : [])
+  ];
+  const rowHeight = 26;
+  const boxHeight = rows.length * rowHeight + 16;
+  page.drawRectangle({ x: margin, y: y - boxHeight, width, height: boxHeight, color: rgb(0.965, 0.973, 0.957), borderColor: line, borderWidth: 0.8 });
+  page.drawRectangle({ x: margin, y: y - boxHeight, width: 3, height: boxHeight, color: band });
+  let rowY = y - 8 - rowHeight / 2 - 4;
+  for (const [index, [label, value]] of rows.entries()) {
+    page.drawText(safeText(label.toUpperCase(), regular), { x: margin + 20, y: rowY, size: 8.5, font: regular, color: muted });
+    page.drawText(safeText(value, bold), { x: margin + 170, y: rowY - 1, size: 12, font: bold, color: ink });
+    if (index < rows.length - 1) page.drawLine({ start: { x: margin + 20, y: rowY - 10 }, end: { x: margin + width - 20, y: rowY - 10 }, thickness: 0.5, color: line });
+    rowY -= rowHeight;
+  }
+  y -= boxHeight + 34;
 
-  // Bloc signature à droite : intitulé, tampon et/ou signature, nom.
+  y = drawWrapped(page, "La présente attestation est établie pour servir et valoir ce que de droit.", { x: margin, y, width, font: regular, size: 12, lineHeight: 18, color: ink }) - 26;
+  drawWrapped(page, `Fait ${identity.city ? `à ${identity.city}, ` : ""}le ${frenchDate(input.date)}`, { x: margin, y, width: width / 2, font: regular, size: 12, lineHeight: 18, color: ink });
+
+  // Signature à droite : intitulé, tampon et/ou signature, nom.
   const blockX = margin + width / 2;
   const blockWidth = width / 2;
-  if (identity.signatureLabel) y = drawWrapped(page, identity.signatureLabel, { ...body, x: blockX, width: blockWidth, y, align: "center" }) - 10;
+  if (identity.signatureLabel) y = drawWrapped(page, identity.signatureLabel, { x: blockX, y, width: blockWidth, font: regular, size: 12, lineHeight: 18, color: ink, align: "center" }) - 8;
   const images = [stamp, signature].filter((image): image is PDFImage => Boolean(image));
   if (images.length > 0) {
-    const slot = images.length === 2 ? (blockWidth - 12) / 2 : Math.min(blockWidth, 200);
-    const sized = images.map((image) => ({ image, size: fit(image, slot, 100) }));
-    const rowHeight = Math.max(...sized.map((entry) => entry.size.height));
-    const totalWidth = sized.reduce((sum, entry) => sum + entry.size.width, 0) + (sized.length - 1) * 12;
-    let x = blockX + (blockWidth - totalWidth) / 2;
+    const slot = images.length === 2 ? (blockWidth - 12) / 2 : Math.min(blockWidth, 190);
+    const sized = images.map((image) => ({ image, size: fit(image, slot, 96) }));
+    const height = Math.max(...sized.map((entry) => entry.size.height));
+    const total = sized.reduce((sum, entry) => sum + entry.size.width, 0) + (sized.length - 1) * 12;
+    let x = blockX + (blockWidth - total) / 2;
     for (const entry of sized) {
-      page.drawImage(entry.image, { x, y: y - rowHeight + (rowHeight - entry.size.height) / 2, ...entry.size });
+      page.drawImage(entry.image, { x, y: y - height + (height - entry.size.height) / 2, ...entry.size });
       x += entry.size.width + 12;
     }
-    y -= rowHeight + 12;
+    y -= height + 12;
   } else {
-    y -= 70;
+    y -= 72;
   }
-  if (identity.signatureName) drawWrapped(page, identity.signatureName, { ...body, x: blockX, width: blockWidth, y, font: bold, align: "center" });
+  if (identity.signatureName) drawWrapped(page, identity.signatureName, { x: blockX, y, width: blockWidth, font: bold, size: 12, lineHeight: 18, color: ink, align: "center" });
+
+  // Pied de page
+  page.drawLine({ start: { x: margin, y: 58 }, end: { x: pageWidth - margin, y: 58 }, thickness: 0.5, color: line });
+  const footer = [identity.clubName, identity.city].filter(Boolean).join(" · ");
+  if (footer) page.drawText(safeText(footer, regular), { x: margin, y: 42, size: 8.5, font: regular, color: muted });
+  page.drawText(safeText(`Réf. ${reference}`, regular), { x: pageWidth - margin - regular.widthOfTextAtSize(`Réf. ${reference}`, 8.5), y: 42, size: 8.5, font: regular, color: muted });
 
   return Buffer.from(await pdf.save());
+}
+
+type Run = { text: string; font: PDFFont };
+type Piece = Run & { width: number };
+
+/** Découpe un texte mêlant normal et gras en lignes qui tiennent dans la largeur. */
+function wrapRuns(runs: Run[], maxWidth: number, size: number) {
+  const words: Piece[] = [];
+  for (const run of runs) {
+    for (const token of safeText(run.text, run.font).split(/(\s+)/).filter(Boolean)) {
+      const text = /^\s+$/.test(token) ? " " : token;
+      words.push({ text, font: run.font, width: run.font.widthOfTextAtSize(text, size) });
+    }
+  }
+  const lines: Piece[][] = [[]];
+  let current = 0;
+  for (const word of words) {
+    const lineIndex = lines.length - 1;
+    if (word.text === " ") {
+      if (current > 0) { lines[lineIndex]!.push(word); current += word.width; }
+      continue;
+    }
+    if (current > 0 && current + word.width > maxWidth) {
+      const last = lines[lineIndex]!;
+      while (last.at(-1)?.text === " ") last.pop();
+      lines.push([word]); current = word.width;
+    } else {
+      lines[lineIndex]!.push(word); current += word.width;
+    }
+  }
+  return lines.filter((entry) => entry.length > 0);
+}
+
+function drawRunLine(page: PDFPage, pieces: Piece[], x: number, y: number, size: number, color: ReturnType<typeof rgb>) {
+  let cursor = x;
+  for (const piece of pieces) {
+    if (piece.text !== " ") page.drawText(piece.text, { x: cursor, y, size, font: piece.font, color });
+    cursor += piece.width;
+  }
 }
 
 function fit(image: PDFImage, maxWidth: number, maxHeight: number) {
