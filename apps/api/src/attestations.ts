@@ -387,21 +387,18 @@ async function buildAttestation(database: Database, input: AttestationInput, ref
   const blockX = margin + width / 2;
   const blockWidth = width / 2;
   if (identity.signatureLabel) y = drawWrapped(page, identity.signatureLabel, { x: blockX, y, width: blockWidth, font: regular, size: 12, lineHeight: 18, color: ink, align: "center" }) - 8;
-  const images = [stamp, signature].filter((image): image is PDFImage => Boolean(image));
-  if (images.length > 0) {
-    const slot = images.length === 2 ? (blockWidth - 12) / 2 : Math.min(blockWidth, 190);
-    const sized = images.map((image) => ({ image, size: fit(image, slot, 96) }));
-    const height = Math.max(...sized.map((entry) => entry.size.height));
-    const total = sized.reduce((sum, entry) => sum + entry.size.width, 0) + (sized.length - 1) * 12;
-    let x = blockX + (blockWidth - total) / 2;
-    for (const entry of sized) {
-      page.drawImage(entry.image, { x, y: y - height + (height - entry.size.height) / 2, ...entry.size });
-      x += entry.size.width + 12;
-    }
-    y -= height + 12;
-  } else {
-    y -= 72;
+  // Signature dans la colonne de droite, toujours à sa taille « seule » ; le tampon, s'il
+  // existe, dans la colonne de gauche (sous « Fait à… »), à la même hauteur.
+  const signatureSize = signature ? fit(signature, Math.min(blockWidth, 190), 96) : null;
+  const stampSize = stamp ? fit(stamp, Math.min(width / 2 - 20, 170), 96) : null;
+  const imageRowHeight = Math.max(signatureSize?.height ?? 0, stampSize?.height ?? 0);
+  if (signature && signatureSize) {
+    page.drawImage(signature, { x: blockX + (blockWidth - signatureSize.width) / 2, y: y - imageRowHeight + (imageRowHeight - signatureSize.height) / 2, ...signatureSize });
   }
+  if (stamp && stampSize) {
+    page.drawImage(stamp, { x: margin + (width / 2 - stampSize.width) / 2, y: y - imageRowHeight + (imageRowHeight - stampSize.height) / 2, ...stampSize });
+  }
+  y -= imageRowHeight > 0 ? imageRowHeight + 12 : 72;
   if (identity.signatureName) drawWrapped(page, identity.signatureName, { x: blockX, y, width: blockWidth, font: bold, size: 12, lineHeight: 18, color: ink, align: "center" });
 
   // Pied de page
