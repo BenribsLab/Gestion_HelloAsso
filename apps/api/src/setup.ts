@@ -682,6 +682,9 @@ export async function importMembers(
                 tierId: item.tierId ?? null,
                 helloassoState: item.state,
                 amount: item.amount ?? null,
+                options: item.options ?? [],
+                payments: item.payments ?? [],
+                totalAmount: membershipTotalAmount(item),
                 orderId: item.order?.id ?? null,
                 orderDate: item.order?.date ?? null,
                 payerFirstName: item.payer?.firstName ?? null,
@@ -865,4 +868,18 @@ function addPreviewValues(
     fieldCounts.set(value, members);
   }
   counts.set(fieldKey, fieldCounts);
+}
+
+const ignoredPaymentStates = new Set(["refused", "refunded", "refunding", "canceled", "cancelled", "abandoned"]);
+
+/**
+ * Somme réellement due pour l'adhésion, en centimes : toutes les échéances de la commande
+ * affectées à cet adhérent (paiement en plusieurs fois, licence et location comprises),
+ * hors paiements refusés ou remboursés. À défaut de détail des paiements : tarif + options.
+ */
+function membershipTotalAmount(item: { amount?: number | undefined; options?: Array<{ amount: number }>; payments?: Array<{ amount: number; state: string | null }> }) {
+  const payments = (item.payments ?? []).filter((payment) => !ignoredPaymentStates.has((payment.state ?? "").toLowerCase()));
+  if (payments.length > 0) return payments.reduce((sum, payment) => sum + payment.amount, 0);
+  if (typeof item.amount !== "number") return null;
+  return item.amount + (item.options ?? []).reduce((sum, option) => sum + option.amount, 0);
 }

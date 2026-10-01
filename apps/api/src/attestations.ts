@@ -130,6 +130,13 @@ export function registerAttestationRoutes(options: {
         date: new Date().toISOString().slice(0, 10)
       },
       recipientEmail: member.payerEmail || member.email || "",
+      // Détail HelloAsso du montant, pour vérification dans la fenêtre d'attestation.
+      payment: {
+        detailed: member.hasDetail,
+        itemAmount: member.itemAmountCents === null ? null : member.itemAmountCents / 100,
+        options: member.options.map((option) => ({ name: option.name, amount: option.amount / 100 })),
+        payments: member.payments.map((payment) => ({ ...payment, amount: payment.amount / 100 }))
+      },
       missing: missingIdentity(identity),
       mailAvailable: contracts.canSendMail(isExtensionEnabled),
       history: history.rows
@@ -225,13 +232,24 @@ async function readMember(database: Database, memberId: string) {
     END`;
   const result = await database.query<{
     firstName: string; lastName: string; email: string | null; amountCents: number | null;
+    itemAmountCents: number | null; hasDetail: boolean;
+    options: Array<{ name: string; amount: number }>;
+    payments: Array<{ date: string | null; state: string | null; installmentNumber: number | null; amount: number }>;
     payerFirstName: string | null; payerLastName: string | null; payerEmail: string | null;
   }>(`
     SELECT
       COALESCE(NULLIF(m.local_overrides->>'firstName', ''), m.first_name) AS "firstName",
       COALESCE(NULLIF(m.local_overrides->>'lastName', ''), m.last_name) AS "lastName",
       CASE WHEN m.local_overrides ? 'email' THEN NULLIF(m.local_overrides->>'email', '') ELSE m.email END AS email,
-      CASE WHEN jsonb_typeof(m.source_data->'amount') = 'number' THEN (m.source_data->>'amount')::numeric::int ELSE NULL END AS "amountCents",
+      CASE
+        WHEN jsonb_typeof(m.source_data->'totalAmount') = 'number' THEN (m.source_data->>'totalAmount')::numeric::int
+        WHEN jsonb_typeof(m.source_data->'amount') = 'number' THEN (m.source_data->>'amount')::numeric::int
+        ELSE NULL
+      END AS "amountCents",
+      CASE WHEN jsonb_typeof(m.source_data->'amount') = 'number' THEN (m.source_data->>'amount')::numeric::int ELSE NULL END AS "itemAmountCents",
+      COALESCE(m.source_data->'options', '[]'::jsonb) AS options,
+      COALESCE(m.source_data->'payments', '[]'::jsonb) AS payments,
+      m.source_data ? 'totalAmount' AS "hasDetail",
       ${payer("payerFirstName")} AS "payerFirstName",
       ${payer("payerLastName")} AS "payerLastName",
       ${payer("payerEmail")} AS "payerEmail"

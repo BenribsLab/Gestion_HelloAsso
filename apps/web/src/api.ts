@@ -478,6 +478,12 @@ export type AttestationInput = {
 export type MemberAttestationState = {
   defaults: AttestationInput;
   recipientEmail: string;
+  payment: {
+    detailed: boolean;
+    itemAmount: number | null;
+    options: Array<{ name: string; amount: number }>;
+    payments: Array<{ date: string | null; state: string | null; installmentNumber: number | null; amount: number }>;
+  };
   missing: string[];
   mailAvailable: boolean;
   history: Array<{ createdAt: string; delivery: "download" | "email"; recipientEmail: string | null; season: string; reference: string | null }>;

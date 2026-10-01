@@ -34,6 +34,10 @@ export type HelloAssoMembershipItem = {
     phone?: string | undefined;
   } | undefined;
   customFields: HelloAssoCustomField[];
+  /** Options payantes de l'article (licence, location de matériel…), en centimes. */
+  options?: Array<{ name: string; amount: number }>;
+  /** Paiements de la commande, pour la part affectée à cet article (échéances comprises). */
+  payments?: Array<{ date: string | null; state: string | null; installmentNumber: number | null; amount: number }>;
 };
 
 const tokenSchema = z.object({
@@ -193,6 +197,7 @@ export function createHelloAssoClient(source: HelloAssoConfigSource) {
           .object({ firstName: z.string().optional(), lastName: z.string().optional() })
           .optional(),
         order: z.object({ id: z.number().optional(), date: z.string().optional() }).optional(),
+        options: z.array(z.object({ name: z.string().optional(), amount: z.number().optional() }).passthrough()).optional(),
         customFields: z
           .array(
             z.object({
@@ -207,6 +212,9 @@ export function createHelloAssoClient(source: HelloAssoConfigSource) {
       .safeParse(value);
     return result.success ? {
       ...result.data,
+      options: (result.data.options ?? [])
+        .filter((option) => typeof option.amount === "number")
+        .map((option) => ({ name: option.name ?? "Option", amount: option.amount! })),
       ...(order ? {
         order: { id: order.id, date: order.date },
         payer: order.payer
@@ -355,12 +363,29 @@ export function createHelloAssoClient(source: HelloAssoConfigSource) {
             email: z.string().optional(),
             phone: z.string().optional()
           }).optional(),
-          items: z.array(z.unknown()).default([])
+          items: z.array(z.unknown()).default([]),
+          payments: z.array(z.object({
+            date: z.string().optional(),
+            state: z.string().optional(),
+            installmentNumber: z.number().optional(),
+            items: z.array(z.object({ id: z.number(), shareAmount: z.number().optional() }).passthrough()).default([])
+          }).passthrough()).default([])
         }).safeParse(value);
         if (!order.success) continue;
         for (const rawItem of order.data.items) {
           const item = parseMembershipItem(rawItem, order.data);
-          if (item) items.set(item.id, item);
+          if (!item) continue;
+          // Part de chaque paiement (y compris les échéances futures) revenant à cet article.
+          item.payments = order.data.payments.flatMap((payment) => {
+            const share = payment.items.find((entry) => entry.id === item.id)?.shareAmount;
+            return typeof share === "number" ? [{
+              date: payment.date ?? null,
+              state: payment.state ?? null,
+              installmentNumber: payment.installmentNumber ?? null,
+              amount: share
+            }] : [];
+          });
+          items.set(item.id, item);
         }
       }
       for (const value of itemValues) {

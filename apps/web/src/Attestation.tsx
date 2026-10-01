@@ -68,10 +68,12 @@ export function MemberAttestation({ memberId, onClose }: { memberId: string; onC
       <legend>Cotisation</legend>
       <div className="attestation-grid">
         <label>Saison<input value={draft.season} maxLength={20} placeholder="2025/2026" onChange={(event) => set({ season: event.target.value })} /></label>
-        <label>Montant (euros)<input type="number" min="0" step="0.01" value={draft.amount ?? ""} placeholder="Non indiqué" onChange={(event) => set({ amount: event.target.value === "" ? null : Number(event.target.value) })} /><small>{state.defaults.amount === null ? "Aucun montant HelloAsso : à saisir." : "Repris de HelloAsso."}</small></label>
+        <label>Montant (euros)<input type="number" min="0" step="0.01" value={draft.amount ?? ""} placeholder="Non indiqué" onChange={(event) => set({ amount: event.target.value === "" ? null : Number(event.target.value) })} /><small>{state.defaults.amount === null ? "Aucun montant HelloAsso : à saisir." : "Total réglé selon HelloAsso, modifiable."}</small></label>
         <label>Date de l’attestation<input type="date" value={draft.date} onChange={(event) => set({ date: event.target.value })} /></label>
       </div>
     </fieldset>
+
+    <PaymentDetail payment={state.payment} />
 
     <fieldset>
       <legend>Payeur</legend>
@@ -95,5 +97,37 @@ export function MemberAttestation({ memberId, onClose }: { memberId: string; onC
       <button className="secondary" type="button" disabled={!valid || busy !== null || !state.mailAvailable || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient.trim())} onClick={() => void send()}>{busy === "email" ? "Envoi…" : "Envoyer par e-mail"}</button>
       <button className="primary" type="button" disabled={!valid || busy !== null} onClick={() => void download()}>{busy === "pdf" ? "Création…" : "Télécharger le PDF"}</button>
     </div>
+  </div>;
+}
+
+const ignoredStates = new Set(["refused", "refunded", "refunding", "canceled", "cancelled", "abandoned"]);
+const paymentStateLabels: Record<string, string> = {
+  authorized: "payé", processed: "payé", registered: "à venir", pending: "en attente", waiting: "en attente",
+  refused: "refusé", refunded: "remboursé", refunding: "remboursement en cours", contested: "contesté", unknown: "inconnu"
+};
+
+/** Détail HelloAsso du montant : tarif, options, échéances. Permet de vérifier le total. */
+function PaymentDetail({ payment }: { payment: MemberAttestationState["payment"] }) {
+  const euros = (value: number) => `${value.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
+  if (!payment.detailed) {
+    return <p className="attestation-payment muted">Détail des paiements indisponible : relancez l’import HelloAsso (Configuration → Import) pour récupérer les options et les échéances.</p>;
+  }
+  const counted = payment.payments.filter((entry) => !ignoredStates.has((entry.state ?? "").toLowerCase()));
+  return <div className="attestation-payment">
+    <strong>Détail HelloAsso</strong>
+    <ul>
+      {payment.itemAmount !== null && <li><span>Tarif</span><span>{euros(payment.itemAmount)}</span></li>}
+      {payment.options.map((option, index) => <li key={`${option.name}-${index}`}><span>Option · {option.name}</span><span>{euros(option.amount)}</span></li>)}
+    </ul>
+    {payment.payments.length > 0 && <>
+      <strong>Paiements{payment.payments.length > 1 ? ` (${payment.payments.length} échéances)` : ""}</strong>
+      <ul>
+        {payment.payments.map((entry, index) => <li key={index} className={ignoredStates.has((entry.state ?? "").toLowerCase()) ? "is-ignored" : undefined}>
+          <span>{entry.installmentNumber ? `Échéance ${entry.installmentNumber}` : `Paiement ${index + 1}`}{entry.date ? ` · ${new Intl.DateTimeFormat("fr-FR", { dateStyle: "short" }).format(new Date(entry.date))}` : ""}{entry.state ? ` · ${paymentStateLabels[entry.state.toLowerCase()] ?? entry.state}` : ""}</span>
+          <span>{euros(entry.amount)}</span>
+        </li>)}
+        <li className="is-total"><span>Total retenu</span><span>{euros(counted.reduce((sum, entry) => sum + entry.amount, 0))}</span></li>
+      </ul>
+    </>}
   </div>;
 }

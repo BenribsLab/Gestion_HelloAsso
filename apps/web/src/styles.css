@@ -671,3 +671,9 @@ th { color: var(--ink-500); font-family: var(--font-mono); font-size: 11px; font
 .header-preview strong { font-size: 17px; }
 .header-preview small, .header-preview > span { font-size: 11px; opacity: .7; letter-spacing: .04em; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.attestation-payment { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-3); font-size: 13.5px; }
+.attestation-payment ul { display: grid; gap: 3px; margin: 0 0 4px; padding: 0; list-style: none; }
+.attestation-payment li { display: flex; justify-content: space-between; gap: 12px; color: var(--ink-700); }
+.attestation-payment li span:last-child { font-family: var(--font-mono); white-space: nowrap; }
+.attestation-payment li.is-ignored { color: var(--ink-300); text-decoration: line-through; }
+.attestation-payment li.is-total { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); color: var(--ink-950); font-weight: 650; }
