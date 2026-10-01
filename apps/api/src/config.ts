@@ -28,7 +28,7 @@ const environmentSchema = z.object({
   AUTH_ENABLED: z.enum(["true", "false"]).default("false"),
   APP_ORIGIN: z.url().default("http://localhost:18473"),
   TRUST_PROXY: z.enum(["true", "false"]).default("false"),
-  SESSION_IDLE_MINUTES: z.coerce.number().int().min(5).max(480).default(30),
+  SESSION_IDLE_MINUTES: z.coerce.number().int().min(5).max(480).default(120),
   SESSION_MAX_HOURS: z.coerce.number().int().min(1).max(168).default(12),
   BOOTSTRAP_ADMIN_EMAIL: z.union([z.email(), z.literal("")]).optional().default(""),
   BOOTSTRAP_ADMIN_NAME: z.string().trim().max(100).default("Administrateur"),
