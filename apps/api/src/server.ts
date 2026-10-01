@@ -18,6 +18,7 @@ import { ExtensionRegistry, ExtensionRegistryError, publicExtensionAssetContentT
 import { ExtensionContracts } from "./extension-contracts.js";
 import { loadExtensions, packageFile } from "./extension-loader.js";
 import { registerExtensionInstaller } from "./extension-installer.js";
+import { registerAttestationRoutes } from "./attestations.js";
 import { ensureMemberFieldInputs, resolveModuleFields, stringOptions } from "./member-fields.js";
 import {
   documentHash,
@@ -76,6 +77,7 @@ const contracts = new ExtensionContracts();
 configureDynamicGroups({ contracts, isExtensionEnabled: (id) => extensions.isEnabled(id) });
 await loadExtensions({ server, database, config, contracts, registry: extensions, helloasso, settings: secureSettings });
 registerExtensionInstaller(server, database, config, extensions);
+registerAttestationRoutes({ server, database, contracts, isExtensionEnabled: (id) => extensions.isEnabled(id) });
 
 server.addHook("preHandler", async (request, reply) => {
   const path = request.url.split("?", 1)[0] ?? request.url;

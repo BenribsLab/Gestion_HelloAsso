@@ -1,6 +1,8 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type AuthUser, type DashboardData, type Extension, type ExtensionConfiguration, type ExtensionInstallation, type Group, type GroupCriterion, type ManagedUser, type Member, type MemberField, type ModuleField } from "./api";
 import { Setup } from "./Setup";
+import { ClubIdentityPanel } from "./ClubIdentity";
+import { MemberAttestation } from "./Attestation";
 import { uiContracts, type RegisteredDocumentPanel, type RegisteredGroupPanel, type RegisteredMemberAction, type RegisteredMemberColumn, type RegisteredMemberDetailPanel } from "./extension-contracts";
 import { CategoryBadge, memberCategoryLabel } from "./extensions/fencing-categories";
 import { loadExtensionBundles } from "./extension-runtime";
@@ -447,11 +449,14 @@ export function App() {
               />
             )}
             {view === "setup" && dashboard && (
-              <Setup
-                helloassoConfigured={dashboard.helloasso.configured}
-                onImported={() => void loadData()}
-                onConfigurationChanged={() => void loadData()}
-              />
+              <div className="page-stack">
+                <Setup
+                  helloassoConfigured={dashboard.helloasso.configured}
+                  onImported={() => void loadData()}
+                  onConfigurationChanged={() => void loadData()}
+                />
+                <ClubIdentityPanel />
+              </div>
             )}
             {view === "extensions" && extensionConfiguration && <Extensions items={extensions} configuration={extensionConfiguration} onChanged={loadData} />}
           </>
@@ -1376,11 +1381,15 @@ function MemberEditor({
   documentPanels: RegisteredDocumentPanel[];
   memberDetailPanels: RegisteredMemberDetailPanel[];
 }) {
+  const [attestationOpen, setAttestationOpen] = useState(false);
   const change = (patch: Partial<MemberDraft>) => onDraftChange({ ...draft, ...patch });
   const changeCustom = (key: string, value: string) => change({
     customValues: { ...draft.customValues, [key]: value }
   });
   return <div className="member-group-editor">
+    {attestationOpen && <Modal title={`Attestation de ${member.firstName} ${member.lastName}`} eyebrow="Licence annuelle acquittée" size="large" onClose={() => setAttestationOpen(false)}>
+      <MemberAttestation memberId={member.id} onClose={() => setAttestationOpen(false)} />
+    </Modal>}
     <div className="member-editor-intro"><div><strong>Modifier {member.firstName} {member.lastName}</strong><p>{member.source === "helloasso" ? "Ces corrections sont locales et prioritaires : un nouvel import HelloAsso ne les écrasera pas." : "Cet adhérent a été ajouté localement et restera indépendant des imports HelloAsso."}</p></div>{memberActions.map((action) => {
       const payload = action.payloadFor(member);
       return <button
@@ -1390,7 +1399,7 @@ function MemberEditor({
         disabled={payload === null}
         onClick={() => onMemberAction(action.extensionId, payload)}
       >{action.label}</button>;
-    })}</div>
+    })}<button className="secondary email-member-button" type="button" onClick={() => setAttestationOpen(true)}>Attestation</button></div>
     {memberDetailPanels.map((panel) => <ExtensionMemberDetailPanel key={panel.extensionId} panel={panel} member={member} onChanged={onDocumentsChanged} />)}
     <div className="member-fields">
       <label><FieldLabel label="Prénom" overridden={member.overriddenFields.includes("firstName")} saving={saving} onRevert={() => onRevert("firstName")} /><input required value={draft.firstName} onChange={(event) => change({ firstName: event.target.value })} /></label>

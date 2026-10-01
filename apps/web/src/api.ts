@@ -413,6 +413,20 @@ export const api = {
     }),
   importMembers: () =>
     request<{ importedCount: number }>("/api/helloasso/import-members", { method: "POST" }),
+  clubIdentity: () => request<ClubIdentityState>("/api/club-identity"),
+  saveClubIdentity: (identity: ClubIdentity) =>
+    request<{ identity: ClubIdentity }>("/api/club-identity", { method: "PUT", body: JSON.stringify(identity) }),
+  uploadClubAsset: (kind: ClubAssetKind, file: File) => {
+    const body = new FormData(); body.append("file", file);
+    return request<{ kind: ClubAssetKind; uploaded: true }>(`/api/club-identity/assets/${kind}`, { method: "POST", body });
+  },
+  deleteClubAsset: (kind: ClubAssetKind) =>
+    request<{ kind: ClubAssetKind; deleted: true }>(`/api/club-identity/assets/${kind}`, { method: "DELETE" }),
+  memberAttestation: (memberId: string) => request<MemberAttestationState>(`/api/members/${memberId}/attestation`),
+  attestationPdf: (memberId: string, input: AttestationInput) =>
+    requestBlob(`/api/members/${memberId}/attestation/pdf`, { method: "POST", body: JSON.stringify(input) }),
+  sendAttestation: (memberId: string, input: AttestationInput & { to: string }) =>
+    request<{ sent: true; to: string }>(`/api/members/${memberId}/attestation/email`, { method: "POST", body: JSON.stringify(input) }),
   uploadMemberDocument: (memberId: string, fieldKey: string, file: File) => {
     const body = new FormData(); body.append("file", file);
     return request<{ uploaded: true; classification: "certificate" | "attestation" | "questionnaire" | "unknown" }>(
@@ -434,3 +448,36 @@ function dispositionFileName(value: string | null) {
   if (encoded) try { return decodeURIComponent(encoded); } catch { /* repli */ }
   return /filename="?([^";]+)"?/i.exec(value)?.[1] ?? null;
 }
+
+export type ClubAssetKind = "logo" | "signature" | "stamp";
+export type ClubIdentity = {
+  clubName: string;
+  city: string;
+  signatoryName: string;
+  signatoryRole: string;
+  signatureLabel: string;
+  signatureName: string;
+};
+export type ClubIdentityState = {
+  identity: ClubIdentity;
+  assets: Record<ClubAssetKind, string | null>;
+  mailAvailable: boolean;
+};
+export type AttestationInput = {
+  memberCivility: "" | "M." | "Mme";
+  firstName: string;
+  lastName: string;
+  season: string;
+  amount: number | null;
+  payerCivility: "" | "M." | "Mme";
+  payerFirstName: string;
+  payerLastName: string;
+  date: string;
+};
+export type MemberAttestationState = {
+  defaults: AttestationInput;
+  recipientEmail: string;
+  missing: string[];
+  mailAvailable: boolean;
+  history: Array<{ createdAt: string; delivery: "download" | "email"; recipientEmail: string | null; season: string }>;
+};

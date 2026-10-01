@@ -117,7 +117,13 @@ export type MemberFieldRequirement = {
  * Contrats déclarés par les extensions et consultés par le noyau. Chaque extension
  * s'enregistre ici au démarrage ; le noyau ne référence plus son identifiant en dur.
  */
-export type TransactionalMail = { to: string; subject: string; text: string; html?: string };
+export type TransactionalMail = {
+  to: string;
+  subject: string;
+  text: string;
+  html?: string;
+  attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+};
 export type MailProvider = { extensionId: string; send(mail: TransactionalMail): Promise<void> };
 
 export class ExtensionContracts {
