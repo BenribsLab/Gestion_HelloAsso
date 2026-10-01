@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, type AttestationInput, type MemberAttestationState } from "./api";
 
 /**
- * Attestation de licence annuelle acquittée d'un adhérent : champs préremplis (HelloAsso et
+ * Attestation de cotisation annuelle acquittée d'un adhérent : champs préremplis (HelloAsso et
  * fiche), modifiables avant de télécharger le PDF ou de l'envoyer par e-mail.
  */
 export function MemberAttestation({ memberId, onClose }: { memberId: string; onClose: () => void }) {

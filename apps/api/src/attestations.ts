@@ -5,7 +5,7 @@ import type { Database } from "./db.js";
 import type { ExtensionContracts } from "./extension-contracts.js";
 
 /**
- * Attestation de licence annuelle acquittée (formule de base, sans extension) : un PDF au nom
+ * Attestation de cotisation annuelle acquittée (formule de base, sans extension) : un PDF au nom
  * de l'adhérent, mentionnant le payeur et le montant, signé au nom du club avec son logo, sa
  * signature et son tampon. Téléchargeable ou envoyé par e-mail (via Messagerie Mail).
  */
@@ -164,11 +164,11 @@ export function registerAttestationRoutes(options: {
     try {
       await contracts.sendMail({
         to: input.to,
-        subject: `Attestation de licence ${input.season} : ${input.firstName} ${input.lastName}`,
+        subject: `Attestation de cotisation ${input.season} : ${input.firstName} ${input.lastName}`,
         text: [
           `Bonjour${input.payerFirstName ? ` ${input.payerFirstName}` : ""},`,
           "",
-          `Veuillez trouver ci-joint l'attestation de licence annuelle acquittée de ${input.firstName} ${input.lastName} pour la saison ${input.season}.`,
+          `Veuillez trouver ci-joint l'attestation de cotisation annuelle acquittée de ${input.firstName} ${input.lastName} pour la saison ${input.season}.`,
           "",
           "Cordialement,",
           signer,
@@ -284,7 +284,7 @@ async function buildAttestation(database: Database, input: AttestationInput, ref
   const identity = await readIdentity(database);
   const [logoAsset, signatureAsset, stampAsset] = await Promise.all(assetKinds.map((kind) => readAsset(database, kind)));
   const pdf = await PDFDocument.create();
-  pdf.setTitle(`Attestation de licence ${input.season} - ${input.firstName} ${input.lastName}`);
+  pdf.setTitle(`Attestation de cotisation ${input.season} - ${input.firstName} ${input.lastName}`);
   pdf.setCreator(identity.clubName || "Gestion Asso");
   const page = pdf.addPage([595.28, 841.89]);
   const regular = await pdf.embedFont(StandardFonts.Helvetica);
@@ -336,7 +336,7 @@ async function buildAttestation(database: Database, input: AttestationInput, ref
   let y = pageHeight - bandHeight - 66;
   page.drawText("ATTESTATION", { x: margin, y, size: 26, font: bold, color: ink });
   y -= 22;
-  page.drawText(safeText(`Licence annuelle acquittée · Saison ${input.season}`, regular), { x: margin, y, size: 12, font: regular, color: muted });
+  page.drawText(safeText(`Cotisation annuelle acquittée · Saison ${input.season}`, regular), { x: margin, y, size: 12, font: regular, color: muted });
   y -= 18;
   page.drawRectangle({ x: margin, y, width: 46, height: 3, color: rgb(0.66, 0.81, 0.11) });
   y -= 44;

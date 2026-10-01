@@ -1387,7 +1387,7 @@ function MemberEditor({
     customValues: { ...draft.customValues, [key]: value }
   });
   return <div className="member-group-editor">
-    {attestationOpen && <Modal title={`Attestation de ${member.firstName} ${member.lastName}`} eyebrow="Licence annuelle acquittée" size="large" onClose={() => setAttestationOpen(false)}>
+    {attestationOpen && <Modal title={`Attestation de ${member.firstName} ${member.lastName}`} eyebrow="Cotisation annuelle acquittée" size="large" onClose={() => setAttestationOpen(false)}>
       <MemberAttestation memberId={member.id} onClose={() => setAttestationOpen(false)} />
     </Modal>}
     <div className="member-editor-intro"><div><strong>Modifier {member.firstName} {member.lastName}</strong><p>{member.source === "helloasso" ? "Ces corrections sont locales et prioritaires : un nouvel import HelloAsso ne les écrasera pas." : "Cet adhérent a été ajouté localement et restera indépendant des imports HelloAsso."}</p></div>{memberActions.map((action) => {
