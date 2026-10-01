@@ -7,6 +7,24 @@ const assetLabels: Record<ClubAssetKind, { title: string; hint: string }> = {
   stamp: { title: "Tampon du club", hint: "Scan du tampon, idéalement sur fond transparent (PNG)." }
 };
 
+const headerPresets = [
+  { color: "#eef2ea", label: "Sauge clair (par défaut)" },
+  { color: "#ffffff", label: "Blanc" },
+  { color: "#f1f3f5", label: "Gris perle" },
+  { color: "#f5efe4", label: "Sable" },
+  { color: "#e8eef7", label: "Bleu pâle" },
+  { color: "#10263f", label: "Bleu nuit" },
+  { color: "#0b2629", label: "Vert profond" }
+];
+
+/** Même règle que le PDF : texte clair sur un fond sombre. */
+function isDark(hex: string) {
+  const match = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!match) return false;
+  const [r, g, b] = [0, 2, 4].map((offset) => parseInt(match[1]!.slice(offset, offset + 2), 16) / 255);
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b! < 0.45;
+}
+
 /**
  * Identité du club (Configuration) : textes et images apposés sur les attestations de licence.
  * Signature et tampon sont facultatifs : seuls ceux déposés apparaissent sur le document.
@@ -70,6 +88,21 @@ export function ClubIdentityPanel() {
       <label>Qualité du signataire<input maxLength={200} placeholder="présidente du Cercle d’Escrime de Valmont" {...field("signatoryRole")} /><small>Suit le nom : « …, présidente du Cercle d’Escrime de Valmont, certifie que… ».</small></label>
       <label>Intitulé au-dessus de la signature<input maxLength={80} placeholder="La Présidente" {...field("signatureLabel")} /></label>
       <label>Nom sous la signature<input maxLength={120} placeholder="Claire MARTIN" {...field("signatureName")} /></label>
+      <fieldset className="header-color-field">
+        <legend>Fond de l’en-tête</legend>
+        <div className="header-swatches" role="radiogroup" aria-label="Fond de l’en-tête">
+          {headerPresets.map((preset) => <button key={preset.color} type="button" role="radio" aria-checked={draft.headerColor.toLowerCase() === preset.color} title={preset.label}
+            className={`header-swatch${draft.headerColor.toLowerCase() === preset.color ? " is-selected" : ""}`} style={{ background: preset.color }}
+            onClick={() => setDraft((current) => current ? { ...current, headerColor: preset.color } : current)}><span className="sr-only">{preset.label}</span></button>)}
+          <label className="header-custom-color" title="Autre couleur"><input type="color" value={draft.headerColor} onChange={(event) => setDraft((current) => current ? { ...current, headerColor: event.target.value } : current)} /><span>Autre…</span></label>
+        </div>
+        <div className="header-preview" style={{ background: draft.headerColor, color: isDark(draft.headerColor) ? "#ffffff" : "#0b2629" }}>
+          {state.assets.logo && <img src={`/api/club-identity/assets/logo?v=${encodeURIComponent(state.assets.logo)}`} alt="" />}
+          <div><strong>{draft.clubName || "Nom du club"}</strong>{draft.city && <small>{draft.city.toUpperCase()}</small>}</div>
+          <span>Réf. 2026-0001</span>
+        </div>
+        <small>Aperçu de l’en-tête. Un logo sur fond transparent (PNG) se pose directement sur cette couleur ; choisissez un fond clair pour un logo noir.</small>
+      </fieldset>
       <div className="club-identity-actions"><button className="primary" type="submit" disabled={busy !== null}>{busy === "save" ? "Enregistrement…" : "Enregistrer"}</button></div>
     </form>
     <div className="club-assets">

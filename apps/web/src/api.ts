@@ -457,6 +457,7 @@ export type ClubIdentity = {
   signatoryRole: string;
   signatureLabel: string;
   signatureName: string;
+  headerColor: string;
 };
 export type ClubIdentityState = {
   identity: ClubIdentity;

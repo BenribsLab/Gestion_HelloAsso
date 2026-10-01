@@ -11,6 +11,7 @@ import type { ExtensionContracts } from "./extension-contracts.js";
  */
 
 const settingsKey = "club_identity";
+export const defaultHeaderColor = "#eef2ea";
 const assetKinds = ["logo", "signature", "stamp"] as const;
 type AssetKind = (typeof assetKinds)[number];
 const maxAssetBytes = 3 * 1024 * 1024;
@@ -21,7 +22,9 @@ const identitySchema = z.object({
   signatoryName: z.string().trim().max(120).default(""),
   signatoryRole: z.string().trim().max(200).default(""),
   signatureLabel: z.string().trim().max(80).default(""),
-  signatureName: z.string().trim().max(120).default("")
+  signatureName: z.string().trim().max(120).default(""),
+  // Fond de l'en-tête des attestations ; clair par défaut (convient à un logo noir).
+  headerColor: z.string().regex(/^#[0-9a-f]{6}$/i).default(defaultHeaderColor)
 });
 export type ClubIdentity = z.infer<typeof identitySchema>;
 
@@ -300,28 +303,33 @@ async function buildAttestation(database: Database, input: AttestationInput, ref
   const band = rgb(0.04, 0.15, 0.16);
 
   // En-tête : bandeau sombre pleine largeur, logo sur pastille blanche, nom du club, référence.
-  const bandHeight = 104;
-  page.drawRectangle({ x: 0, y: pageHeight - bandHeight, width: pageWidth, height: bandHeight, color: band });
+  // En-tête : fond réglable (clair par défaut), logo posé directement dessus, sans cadre.
+  // Les textes passent en clair sur un fond sombre, en foncé sur un fond clair.
+  const bandHeight = 112;
+  const headerColor = hexColor(identity.headerColor);
+  const darkHeader = luminance(identity.headerColor) < 0.45;
+  const headerText = darkHeader ? rgb(1, 1, 1) : ink;
+  const headerMuted = darkHeader ? rgb(0.72, 0.79, 0.77) : muted;
+  page.drawRectangle({ x: 0, y: pageHeight - bandHeight, width: pageWidth, height: bandHeight, color: headerColor });
+  if (!darkHeader) page.drawLine({ start: { x: 0, y: pageHeight - bandHeight }, end: { x: pageWidth, y: pageHeight - bandHeight }, thickness: 0.8, color: line });
   let nameX = margin;
   if (logo) {
-    const box = 72;
-    page.drawRectangle({ x: margin, y: pageHeight - bandHeight / 2 - box / 2, width: box, height: box, color: rgb(1, 1, 1) });
-    const size = fit(logo, box - 12, box - 12);
-    page.drawImage(logo, { x: margin + (box - size.width) / 2, y: pageHeight - bandHeight / 2 - size.height / 2, ...size });
-    nameX = margin + box + 20;
+    const size = fit(logo, 120, 76);
+    page.drawImage(logo, { x: margin, y: pageHeight - bandHeight / 2 - size.height / 2, ...size });
+    nameX = margin + size.width + 22;
   }
-  const nameWidth = pageWidth - margin - nameX - 150;
+  const nameWidth = pageWidth - margin - nameX - 130;
   const clubLines = wrapRuns([{ text: identity.clubName || "Club", font: bold }], nameWidth, 18);
-  let nameY = pageHeight - bandHeight / 2 + (clubLines.length - 1) * 11 + 2;
+  let nameY = pageHeight - bandHeight / 2 + (clubLines.length - 1) * 11 + (identity.city ? 4 : -4);
   for (const current of clubLines) {
-    drawRunLine(page, current, nameX, nameY, 18, rgb(1, 1, 1));
+    drawRunLine(page, current, nameX, nameY, 18, headerText);
     nameY -= 22;
   }
-  if (identity.city) page.drawText(safeText(identity.city.toUpperCase(), regular), { x: nameX, y: nameY - 2, size: 8.5, font: regular, color: rgb(0.68, 0.76, 0.74) });
+  if (identity.city) page.drawText(safeText(identity.city.toUpperCase(), regular), { x: nameX, y: nameY + 4, size: 8.5, font: regular, color: headerMuted });
   const referenceText = `Réf. ${reference}`;
   page.drawText(safeText(referenceText, regular), {
     x: pageWidth - margin - regular.widthOfTextAtSize(referenceText, 9), y: pageHeight - bandHeight / 2 - 3,
-    size: 9, font: regular, color: rgb(0.68, 0.76, 0.74)
+    size: 9, font: regular, color: headerMuted
   });
 
   // Titre
@@ -442,6 +450,18 @@ function drawRunLine(page: PDFPage, pieces: Piece[], x: number, y: number, size:
     if (piece.text !== " ") page.drawText(piece.text, { x: cursor, y, size, font: piece.font, color });
     cursor += piece.width;
   }
+}
+
+function hexColor(value: string) {
+  const hex = /^#([0-9a-f]{6})$/i.exec(value)?.[1] ?? defaultHeaderColor.slice(1);
+  return rgb(parseInt(hex.slice(0, 2), 16) / 255, parseInt(hex.slice(2, 4), 16) / 255, parseInt(hex.slice(4, 6), 16) / 255);
+}
+
+/** Luminance perçue (0 = noir, 1 = blanc) pour choisir la couleur du texte de l'en-tête. */
+function luminance(value: string) {
+  const hex = /^#([0-9a-f]{6})$/i.exec(value)?.[1] ?? defaultHeaderColor.slice(1);
+  const [r, g, b] = [0, 2, 4].map((offset) => parseInt(hex.slice(offset, offset + 2), 16) / 255);
+  return 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
 }
 
 function fit(image: PDFImage, maxWidth: number, maxHeight: number) {
