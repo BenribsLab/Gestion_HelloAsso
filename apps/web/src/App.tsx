@@ -1097,28 +1097,31 @@ function Members({
     name: "",
     category: new Set<string>(),
     extensions: {} as Record<string, Set<string>>,
-    groups: new Set<string>()
+    groups: new Set<string>(),
+    origin: "all" as "all" | "helloasso" | "manual"
   });
+  const columnValues = useColumnFilterValues(memberColumns, members);
   const editingMember = members.find((member) => member.id === editingMemberId) ?? null;
   const filterOptions = useMemo(() => ({
     category: uniqueSorted(members.map(memberCategoryLabel)),
-    extensions: Object.fromEntries(memberColumns.map((column) => [column.key, uniqueSorted(members.map((member) => column.filterValue(member as never)))])),
+    extensions: Object.fromEntries(memberColumns.map((column) => [column.key, uniqueSorted(members.map((member) => columnValues(column, member)))])),
     groups: uniqueSorted(members.flatMap((member) => member.groups.length ? member.groups.map((group) => group.name) : ["Aucun groupe"]))
-  }), [memberColumns, members]);
+  }), [memberColumns, members, columnValues]);
   const filteredMembers = useMemo(() => members.filter((member) => {
     const values = {
       name: `${member.lastName} ${member.firstName}`,
       category: memberCategoryLabel(member),
       contact: memberContactLabel(member),
-      extensions: Object.fromEntries(memberColumns.map((column) => [column.key, column.filterValue(member as never)])),
+      extensions: Object.fromEntries(memberColumns.map((column) => [column.key, columnValues(column, member)])),
       groups: member.groups.length ? member.groups.map((group) => group.name) : ["Aucun groupe"]
     };
-    return includesText([values.name, values.category, values.contact, ...Object.values(values.extensions), ...values.groups].join(" "), search)
+    return (filters.origin === "all" || member.source === filters.origin)
+      && includesText([values.name, values.category, values.contact, ...Object.values(values.extensions), ...values.groups].join(" "), search)
       && includesText(values.name, filters.name)
       && matchesSelected([values.category], filters.category)
       && memberColumns.every((column) => matchesSelected([values.extensions[column.key] ?? ""], filters.extensions[column.key] ?? new Set()))
       && matchesSelected(values.groups, filters.groups);
-  }), [members, search, filters, memberColumns]);
+  }), [members, search, filters, memberColumns, columnValues]);
   const pageCount = Math.max(1, Math.ceil(filteredMembers.length / pageSize));
   const visibleMembers = filteredMembers.slice((page - 1) * pageSize, page * pageSize);
 
@@ -1229,6 +1232,9 @@ function Members({
         <>
           <div className="list-toolbar">
             <ListSearch value={search} onChange={setSearch} placeholder="Rechercher un nom, un prénom, un groupe…" />
+            <div className="segmented origin-filter" role="radiogroup" aria-label="Origine des adhérents">
+              {([["all", "Tous"], ["helloasso", "HelloAsso"], ["manual", "Saisie locale"]] as const).map(([value, label]) => <button key={value} type="button" role="radio" aria-checked={filters.origin === value} aria-pressed={filters.origin === value} onClick={() => setFilters((current) => ({ ...current, origin: value }))}>{label}</button>)}
+            </div>
             <Pagination page={page} pageSize={pageSize} total={filteredMembers.length} onPageChange={setPage} onPageSizeChange={setPageSize} />
           </div>
           <div className="table-wrap data-table-wrap">
@@ -1683,6 +1689,7 @@ function Groups({
     extensions: {} as Record<string, Set<string>>,
     groups: new Set<string>()
   });
+  const groupColumnValues = useColumnFilterValues(memberColumns, members);
   const selectedCriterion = groupCriteria.find((criterion) => criterion.key === groupCriterionKey) ?? null;
   const selectedGroup = groups.find((group) => group.id === selectedGroupId) ?? null;
   const groupMembers = selectedGroup
@@ -1690,7 +1697,7 @@ function Groups({
     : [];
   const groupMemberFilterOptions = {
     category: uniqueSorted(groupMembers.map(memberCategoryLabel)),
-    extensions: Object.fromEntries(memberColumns.map((column) => [column.key, uniqueSorted(groupMembers.map((member) => column.filterValue(member as never)))])),
+    extensions: Object.fromEntries(memberColumns.map((column) => [column.key, uniqueSorted(groupMembers.map((member) => groupColumnValues(column, member)))])),
     groups: uniqueSorted(groupMembers.flatMap((member) => {
       const others = member.groups.filter((group) => group.id !== selectedGroup?.id);
       return others.length ? others.map((group) => group.name) : ["Aucun autre groupe"];
@@ -1701,7 +1708,7 @@ function Groups({
     const values = {
       name: `${member.lastName} ${member.firstName} ${member.email ?? ""} ${member.phone ?? ""}`,
       category: memberCategoryLabel(member),
-      extensions: Object.fromEntries(memberColumns.map((column) => [column.key, column.filterValue(member as never)])),
+      extensions: Object.fromEntries(memberColumns.map((column) => [column.key, groupColumnValues(column, member)])),
       groups: otherGroups.length ? otherGroups.map((group) => group.name) : ["Aucun autre groupe"]
     };
     return includesText([values.name, values.category, ...Object.values(values.extensions), ...values.groups].join(" "), memberSearch)
@@ -1924,6 +1931,33 @@ function AddGroupMembers({ group, members, onCancel, onAdded }: {
       <button className="primary" type="submit" disabled={busy || selection.size === 0}>{busy ? "Ajout…" : `Ajouter ${selection.size || ""}`.trim()}</button>
     </div>
   </form>;
+}
+
+/**
+ * Valeur de filtre d'une colonne d'extension. Une colonne dont la donnée est chargée de façon
+ * asynchrone (statut de licence…) fournit `loadFilterValues` : les valeurs de tous les adhérents
+ * sont chargées en une fois, puis rechargées quand la liste change.
+ */
+function useColumnFilterValues(columns: RegisteredMemberColumn[], members: Member[]) {
+  const [loaded, setLoaded] = useState<Record<string, Record<string, string>>>({});
+  // La liste des colonnes est recréée à chaque rendu : on ne recharge que si son contenu change.
+  const columnsRef = useRef(columns);
+  columnsRef.current = columns;
+  const columnsKey = columns.filter((column) => column.loadFilterValues).map((column) => `${column.extensionId}/${column.key}`).join("|");
+  useEffect(() => {
+    let active = true;
+    for (const column of columnsRef.current) {
+      if (!column.loadFilterValues) continue;
+      void column.loadFilterValues()
+        .then((values) => { if (active) setLoaded((current) => ({ ...current, [column.key]: values })); })
+        .catch(() => undefined);
+    }
+    return () => { active = false; };
+  }, [columnsKey, members]);
+  return useCallback(
+    (column: RegisteredMemberColumn, member: Member) => loaded[column.key]?.[member.id] ?? column.filterValue(member as never),
+    [loaded]
+  );
 }
 
 function GroupBadges({ groups }: { groups: Array<{ id: string; name: string }> }) {

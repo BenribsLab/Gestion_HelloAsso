@@ -73,6 +73,8 @@ export type RegisteredMemberColumn = {
   label: string;
   element: string;
   filterValue(member: ExtensionMemberSubject): string;
+  /** Facultatif : valeurs de filtre de tous les adhérents d'un coup (donnée chargée à distance). */
+  loadFilterValues?(): Promise<Record<string, string>>;
   /**
    * Le tableau des adhérents utilise `table-layout: fixed` (évite que les colonnes sautent
    * pendant qu'une colonne d'extension charge ses données de façon asynchrone) — ce qui répartit

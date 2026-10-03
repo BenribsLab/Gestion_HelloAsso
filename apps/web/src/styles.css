@@ -677,3 +677,4 @@ th { color: var(--ink-500); font-family: var(--font-mono); font-size: 11px; font
 .attestation-payment li span:last-child { font-family: var(--font-mono); white-space: nowrap; }
 .attestation-payment li.is-ignored { color: var(--ink-300); text-decoration: line-through; }
 .attestation-payment li.is-total { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); color: var(--ink-950); font-weight: 650; }
+.origin-filter { flex: 0 0 auto; }
