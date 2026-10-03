@@ -119,6 +119,12 @@ export interface ExtensionHostCore {
    * extensions de génération d'archives et de noms de fichiers.
    */
   zipBuffer(files: Array<{ name: string; content: Buffer }>): Promise<Buffer>;
+  /**
+   * Signe un paramètre de retour OAuth pour le relais du serveur central : HMAC-SHA256 avec une
+   * clé dérivée du jeton de licence du club (le serveur central n'en connaît que l'empreinte).
+   * Absent si le club n'est pas relié au serveur central.
+   */
+  signCentralState?(payload: string): string;
   safeDownloadName(value: string): string;
   /** Téléchargement strictement en lecture seule, avec validation d'URL par le client HelloAsso. */
   getHelloAssoDocument?(url: string): Promise<{

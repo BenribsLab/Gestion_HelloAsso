@@ -1,5 +1,6 @@
 import { join, resolve, sep } from "node:path";
 import { currentSeason, listSeasons, requestSeason, seasonById } from "./seasons.js";
+import { createHash, createHmac } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import type { FastifyInstance } from "fastify";
 import type { AppConfig } from "./config.js";
@@ -94,6 +95,9 @@ function buildHost(options: LoadOptions, manifest: ExtensionManifest): Extension
   const core: ExtensionHostCore = {
     zipBuffer,
     safeDownloadName,
+    ...(options.config.extensions.licenseToken
+      ? { signCentralState: (payload: string) => signCentralState(options.config.extensions.licenseToken!, payload) }
+      : {}),
     ...(capabilities.has("dynamic-groups")
       ? { refreshDynamicGroups: refreshDynamicGroups as unknown as (database: ExtensionQueryable) => Promise<void> }
       : {}),
@@ -182,4 +186,10 @@ function wrapWebSocket(socket: import("ws").WebSocket): ExtensionWebSocket {
     on,
     close: (code, reason) => socket.close(code, reason)
   };
+}
+
+/** Même calcul que le relais OAuth du serveur central (clé = empreinte SHA-256 du jeton). */
+function signCentralState(licenseToken: string, payload: string) {
+  const key = createHash("sha256").update(licenseToken).digest("hex");
+  return createHmac("sha256", key).update(`gu-oauth-state\0${payload}`).digest("base64url");
 }
