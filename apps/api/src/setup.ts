@@ -10,6 +10,7 @@ import { refreshDynamicGroups } from "./dynamic-groups.js";
 import { groupValues, normalizeGroupValue } from "./group-values.js";
 import type { MemberFieldRequirement } from "./extension-contracts.js";
 import { resolveModuleFields } from "./member-fields.js";
+import type { Season } from "./seasons.js";
 
 export { normalizeGroupValue } from "./group-values.js";
 
@@ -78,7 +79,7 @@ export function isCampaignCurrent(campaign: {
   return (!start || start <= now) && (!end || end >= now);
 }
 
-export async function getSetupState(database: Database) {
+export async function getSetupState(database: Database, seasonId: string) {
   const [
     campaignsResult,
     fieldsResult,
@@ -94,16 +95,21 @@ export async function getSetupState(database: Database) {
       startDate: Date | null;
       endDate: Date | null;
       selected: boolean;
+      seasonId: string | null;
+      seasonLabel: string | null;
       fieldsCount: number;
     }>(`
       SELECT c.form_slug AS "formSlug", c.title, c.state,
-             c.start_date AS "startDate", c.end_date AS "endDate", c.selected,
+             c.start_date AS "startDate", c.end_date AS "endDate",
+             c.season_id IS NOT DISTINCT FROM $1::uuid AS selected,
+             c.season_id AS "seasonId", s.label AS "seasonLabel",
              count(cf.source_field_id)::int AS "fieldsCount"
       FROM helloasso_campaigns c
+      LEFT JOIN seasons s ON s.id = c.season_id
       LEFT JOIN helloasso_campaign_fields cf ON cf.form_slug = c.form_slug
-      GROUP BY c.form_slug
+      GROUP BY c.form_slug, s.label
       ORDER BY c.start_date DESC NULLS LAST, c.title
-    `),
+    `, [seasonId]),
     database.query<{
       key: string;
       label: string;
@@ -171,7 +177,7 @@ export async function getSetupState(database: Database) {
   };
 }
 
-export async function discoverCampaigns(database: Database, helloasso: HelloAssoClient) {
+export async function discoverCampaigns(database: Database, helloasso: HelloAssoClient, seasonId: string) {
   const campaigns = await helloasso.listMembershipCampaigns();
   const client = await database.connect();
   try {
@@ -206,20 +212,32 @@ export async function discoverCampaigns(database: Database, helloasso: HelloAsso
   } finally {
     client.release();
   }
-  return getSetupState(database);
+  return getSetupState(database, seasonId);
 }
 
+/**
+ * Rattache des campagnes à une saison. Les champs choisis restent communs à toutes les
+ * saisons : une campagne dont un champ a changé de nom ou de type est signalée par
+ * `seasonFieldCheck`, et la correspondance refaite à la main est conservée ici.
+ */
 export async function selectCampaigns(
   database: Database,
   helloasso: HelloAssoClient,
+  seasonId: string,
   formSlugs: string[]
 ) {
-  const known = await database.query<{ formSlug: string }>(
-    "SELECT form_slug AS \"formSlug\" FROM helloasso_campaigns WHERE form_slug = ANY($1::text[])",
+  const known = await database.query<{ formSlug: string; title: string; seasonId: string | null; seasonLabel: string | null }>(
+    `SELECT c.form_slug AS "formSlug", c.title, c.season_id AS "seasonId", s.label AS "seasonLabel"
+     FROM helloasso_campaigns c LEFT JOIN seasons s ON s.id = c.season_id
+     WHERE c.form_slug = ANY($1::text[])`,
     [formSlugs]
   );
   if (known.rows.length !== new Set(formSlugs).size) {
     throw new Error("Une campagne sélectionnée n'est pas connue.");
+  }
+  const elsewhere = known.rows.find((campaign) => campaign.seasonId && campaign.seasonId !== seasonId);
+  if (elsewhere) {
+    throw new Error(`La campagne « ${elsewhere.title} » est déjà rattachée à la saison ${elsewhere.seasonLabel}.`);
   }
 
   const inspected = await Promise.all(
@@ -239,18 +257,36 @@ export async function selectCampaigns(
   const client = await database.connect();
   try {
     await client.query("BEGIN");
-    await client.query("UPDATE helloasso_campaigns SET selected = false");
     await client.query(
-      "UPDATE helloasso_campaigns SET selected = true, updated_at = now() WHERE form_slug = ANY($1::text[])",
-      [formSlugs]
+      `UPDATE helloasso_campaigns SET selected = false, season_id = NULL, updated_at = now()
+       WHERE season_id = $1 AND NOT (form_slug = ANY($2::text[]))`,
+      [seasonId, formSlugs]
     );
-    await client.query("DELETE FROM app_settings WHERE key = 'helloasso_setup'");
-    await client.query("DELETE FROM app_settings WHERE key = 'helloasso_groups'");
+    await client.query(
+      "UPDATE helloasso_campaigns SET selected = true, season_id = $2, updated_at = now() WHERE form_slug = ANY($1::text[])",
+      [formSlugs, seasonId]
+    );
 
     for (const campaign of inspected) {
+      // Correspondances refaites à la main (champ renommé dans HelloAsso) : conservées.
+      const manualMappings = await client.query<{ sourceFieldId: string; fieldKey: string }>(
+        `SELECT source_field_id AS "sourceFieldId", field_key AS "fieldKey"
+         FROM helloasso_campaign_fields WHERE form_slug = $1 AND manual = true`,
+        [campaign.formSlug]
+      );
+      const manualKeyBySource = new Map(manualMappings.rows.map((row) => [row.sourceFieldId, row.fieldKey]));
       await client.query("DELETE FROM helloasso_campaign_fields WHERE form_slug = $1", [campaign.formSlug]);
       const fields = uniqueFields(campaign.items.flatMap((item) => item.customFields));
       for (const field of fields) {
+        const manualKey = manualKeyBySource.get(field.id);
+        if (manualKey) {
+          await client.query(
+            `INSERT INTO helloasso_campaign_fields (form_slug, source_field_id, field_key, manual)
+             VALUES ($1, $2, $3, true)`,
+            [campaign.formSlug, field.id, manualKey]
+          );
+          continue;
+        }
         const localMatch = await client.query<{ key: string }>(
           `SELECT field_key AS key FROM helloasso_fields
            WHERE source = 'local' AND lower(label) = lower($1) AND field_type = $2
@@ -300,10 +336,74 @@ export async function selectCampaigns(
     client.release();
   }
 
-  return getSetupState(database);
+  return getSetupState(database, seasonId);
 }
 
-export async function selectFields(database: Database, keys: string[], healthDocumentFieldKey: string | null) {
+/**
+ * Contrôle des champs d'une saison : chaque champ choisi doit se retrouver dans au moins une
+ * campagne de la saison. Un champ absent (renommé, type changé dans HelloAsso) est signalé
+ * avec les champs des campagnes qui ne correspondent à aucun champ choisi.
+ */
+export async function seasonFieldCheck(database: Pick<Database, "query">, seasonId: string) {
+  const [campaigns, selected, campaignFields] = await Promise.all([
+    database.query<{ formSlug: string; title: string }>(
+      `SELECT form_slug AS "formSlug", title FROM helloasso_campaigns WHERE season_id = $1 ORDER BY title`,
+      [seasonId]
+    ),
+    database.query<{ key: string; label: string; type: string }>(
+      `SELECT field_key AS key, label, field_type AS type FROM helloasso_fields
+       WHERE selected = true AND source = 'helloasso' ORDER BY label`
+    ),
+    database.query<{ formSlug: string; sourceFieldId: string; fieldKey: string; label: string; type: string; manual: boolean }>(
+      `SELECT cf.form_slug AS "formSlug", cf.source_field_id AS "sourceFieldId", cf.field_key AS "fieldKey",
+              f.label, f.field_type AS type, cf.manual
+       FROM helloasso_campaign_fields cf
+       JOIN helloasso_campaigns c ON c.form_slug = cf.form_slug AND c.season_id = $1
+       JOIN helloasso_fields f ON f.field_key = cf.field_key
+       ORDER BY f.label`,
+      [seasonId]
+    )
+  ]);
+  const selectedKeys = new Set(selected.rows.map((field) => field.key));
+  const presentKeys = new Set(campaignFields.rows.map((field) => field.fieldKey));
+  const unmapped = campaignFields.rows.filter((field) => !selectedKeys.has(field.fieldKey));
+  return {
+    campaigns: campaigns.rows,
+    mapped: campaignFields.rows.filter((field) => field.manual),
+    missing: campaigns.rows.length === 0 ? [] : selected.rows
+      .filter((field) => !presentKeys.has(field.key))
+      .map((field) => ({
+        ...field,
+        // Même nom, autre type : très probablement le même champ dont HelloAsso a changé le type.
+        sameLabelCandidate: unmapped.find((candidate) => candidate.label.toLocaleLowerCase("fr") === field.label.toLocaleLowerCase("fr")) ?? null
+      })),
+    candidates: unmapped
+  };
+}
+
+/** Associe le champ d'une campagne de la saison à un champ choisi (correspondance manuelle). */
+export async function mapSeasonField(
+  database: Pick<Database, "query">,
+  seasonId: string,
+  input: { formSlug: string; sourceFieldId: string; fieldKey: string }
+) {
+  const field = await database.query(
+    "SELECT 1 FROM helloasso_fields WHERE field_key = $1 AND selected = true",
+    [input.fieldKey]
+  );
+  if (!field.rows[0]) throw new Error("Ce champ n'est pas un champ choisi.");
+  const result = await database.query(
+    `UPDATE helloasso_campaign_fields cf SET field_key = $4, manual = true
+     FROM helloasso_campaigns c
+     WHERE c.form_slug = cf.form_slug AND c.season_id = $1
+       AND cf.form_slug = $2 AND cf.source_field_id = $3`,
+    [seasonId, input.formSlug, input.sourceFieldId, input.fieldKey]
+  );
+  if (!result.rowCount) throw new Error("Ce champ de campagne n'appartient pas à la saison.");
+  return seasonFieldCheck(database, seasonId);
+}
+
+export async function selectFields(database: Database, seasonId: string, keys: string[], healthDocumentFieldKey: string | null) {
   const known = await database.query<{ key: string }>(
     `SELECT DISTINCT f.field_key AS key
      FROM helloasso_fields f
@@ -369,7 +469,7 @@ export async function selectFields(database: Database, keys: string[], healthDoc
   } finally {
     client.release();
   }
-  return getSetupState(database);
+  return getSetupState(database, seasonId);
 }
 
 export async function previewGrouping(
@@ -427,6 +527,7 @@ export async function previewGrouping(
 
 export async function saveGroupDefinitions(
   database: Database,
+  seasonId: string,
   groups: Array<{
     id?: string | undefined;
     name: string;
@@ -501,19 +602,22 @@ export async function saveGroupDefinitions(
   } finally {
     client.release();
   }
-  return getSetupState(database);
+  return getSetupState(database, seasonId);
 }
 
+/** Importe les adhérents des campagnes HelloAsso de la saison. */
 export async function importMembers(
   database: Database,
   helloasso: HelloAssoClient,
+  season: Season,
   requirements: MemberFieldRequirement[] = []
 ) {
   const campaignsResult = await database.query<{ formSlug: string; title: string }>(
-    `SELECT form_slug AS "formSlug", title FROM helloasso_campaigns WHERE selected = true`
+    `SELECT form_slug AS "formSlug", title FROM helloasso_campaigns WHERE season_id = $1`,
+    [season.id]
   );
   if (campaignsResult.rows.length === 0) {
-    throw new Error("Aucune campagne n'est sélectionnée.");
+    throw new Error(`Aucune campagne HelloAsso n'est rattachée à la saison ${season.label}.`);
   }
   const fieldsResult = await database.query<{
     key: string;
@@ -547,6 +651,16 @@ export async function importMembers(
   const customFieldKeyByIdentity = new Map(
     allFieldsResult.rows.map((field) => [`${field.type}\0${field.label}`, field.key])
   );
+  // Correspondance propre à chaque campagne (identifiant du champ HelloAsso -> champ choisi) :
+  // un champ renommé d'une saison à l'autre reste rattaché au même champ de l'application.
+  const campaignFieldsResult = await database.query<{ formSlug: string; sourceFieldId: string; fieldKey: string }>(
+    `SELECT form_slug AS "formSlug", source_field_id AS "sourceFieldId", field_key AS "fieldKey"
+     FROM helloasso_campaign_fields WHERE form_slug = ANY($1::text[])`,
+    [campaignsResult.rows.map((campaign) => campaign.formSlug)]
+  );
+  const campaignFieldKey = new Map(
+    campaignFieldsResult.rows.map((row) => [`${row.formSlug}\0${row.sourceFieldId}`, row.fieldKey])
+  );
   const groupRulesResult = await database.query<{
     id: string;
     name: string;
@@ -572,6 +686,7 @@ export async function importMembers(
     groupDefinitions.set(rule.id, definition);
   }
 
+  const retainedByKey = new Map([...retainedFields.values()].map((field) => [field.key, field]));
   const syncResult = await database.query<{ id: string }>(
     "INSERT INTO helloasso_sync_runs (status) VALUES ('running') RETURNING id"
   );
@@ -626,7 +741,8 @@ export async function importMembers(
           let birthDate: string | null = null;
           const documentAnswers: Array<{ fieldKey: string; url: string }> = [];
           for (const answer of item.customFields) {
-            const groupingFieldKey = customFieldKeyByIdentity.get(
+            const mappedKey = campaignFieldKey.get(`${campaign.formSlug}\0${answer.id}`);
+            const groupingFieldKey = mappedKey ?? customFieldKeyByIdentity.get(
               `${answer.type}\0${answer.name}`
             );
             if (groupingFieldKey) {
@@ -639,7 +755,8 @@ export async function importMembers(
             if (answer.type === "Date" && /date de naissance/.test(normalizedLabel)) {
               birthDate = dateAnswerToString(answer.answer);
             }
-            const retained = retainedFields.get(`${answer.type}\0${answer.name}`);
+            const retained = (mappedKey ? retainedByKey.get(mappedKey) : undefined)
+              ?? retainedFields.get(`${answer.type}\0${answer.name}`);
             if (!retained) continue;
             if (retained.type === "File") {
               const url = documentAnswerUrl(answer.answer);
@@ -652,10 +769,14 @@ export async function importMembers(
               phone = answerToString(answer.answer);
             }
           }
+          const firstName = item.user.firstName.trim();
+          const lastName = item.user.lastName.trim();
+          const personId = await findPersonId(client, season.id, firstName, lastName, birthDate);
           const memberResult = await client.query<{ id: string; locallyDeletedAt: Date | null }>(
             `INSERT INTO members
-               (helloasso_item_id, first_name, last_name, email, phone, birth_date, status, source, source_data, profile_data, module_data)
-             VALUES ($1, $2, $3, $4, $5, $6, 'active', 'helloasso', $7, $8, $9)
+               (helloasso_item_id, first_name, last_name, email, phone, birth_date, status, source, source_data, profile_data, module_data,
+                season_id, person_id)
+             VALUES ($1, $2, $3, $4, $5, $6, 'active', 'helloasso', $7, $8, $9, $10, COALESCE($11::uuid, gen_random_uuid()))
              ON CONFLICT (helloasso_item_id) DO UPDATE SET
                first_name = EXCLUDED.first_name,
                last_name = EXCLUDED.last_name,
@@ -670,8 +791,8 @@ export async function importMembers(
              RETURNING id, locally_deleted_at AS "locallyDeletedAt"`,
             [
               item.id,
-              item.user.firstName.trim(),
-              item.user.lastName.trim(),
+              firstName,
+              lastName,
               email,
               phone,
               birthDate,
@@ -693,7 +814,9 @@ export async function importMembers(
                 payerPhone: item.payer?.phone ?? null
               },
               profileData,
-              moduleData
+              moduleData,
+              season.id,
+              personId
             ]
           );
           if (memberResult.rows[0]!.locallyDeletedAt) continue;
@@ -799,6 +922,36 @@ export async function importMembers(
     );
     throw error;
   }
+}
+
+/**
+ * Personne déjà connue d'une autre saison : même nom, même prénom et même date de naissance
+ * (sans tenir compte des accents ni de la casse). Sans date de naissance, pas de rapprochement.
+ */
+export async function findPersonId(
+  database: Pick<Database, "query">,
+  seasonId: string,
+  firstName: string,
+  lastName: string,
+  birthDate: string | null
+) {
+  if (!birthDate) return null;
+  const result = await database.query<{ personId: string; firstName: string; lastName: string }>(
+    `SELECT person_id AS "personId",
+            COALESCE(NULLIF(local_overrides->>'firstName', ''), first_name) AS "firstName",
+            COALESCE(NULLIF(local_overrides->>'lastName', ''), last_name) AS "lastName"
+     FROM members
+     WHERE season_id <> $1
+       AND COALESCE(NULLIF(local_overrides->>'birthDate', '')::date, birth_date) = $2::date
+     ORDER BY created_at DESC`,
+    [seasonId, birthDate]
+  );
+  const wanted = `${personName(firstName)}\0${personName(lastName)}`;
+  return result.rows.find((row) => `${personName(row.firstName)}\0${personName(row.lastName)}` === wanted)?.personId ?? null;
+}
+
+function personName(value: string) {
+  return value.normalize("NFD").replace(/\p{Diacritic}/gu, "").toLocaleLowerCase("fr").replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function uniqueFields(fields: HelloAssoCustomField[]) {

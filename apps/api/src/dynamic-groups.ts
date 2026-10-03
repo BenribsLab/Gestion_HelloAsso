@@ -1,6 +1,7 @@
 import type { Database } from "./db.js";
 import type { ExtensionContracts, ResolvedGroupCriterion } from "./extension-contracts.js";
 import { groupValues } from "./group-values.js";
+import { listSeasons, seasonReference, type Season } from "./seasons.js";
 
 type Queryable = Pick<Database, "query">;
 
@@ -10,6 +11,7 @@ type DynamicMember = {
   profileData: Record<string, unknown>;
   localOverrides: Record<string, unknown>;
   birthDate: string | null;
+  seasonId: string;
 };
 
 type CriterionField = {
@@ -33,9 +35,14 @@ export function configureDynamicGroups(access: NonNullable<typeof contractAccess
   contractAccess = access;
 }
 
-async function contributedCriteria(database: Queryable) {
+/** Critères apportés par les modules, calculés pour la saison (catégorie selon l'âge…). */
+async function contributedCriteria(database: Queryable, season?: Season) {
   if (!contractAccess) return [];
-  return contractAccess.contracts.loadGroupCriteria(database, contractAccess.isExtensionEnabled);
+  return contractAccess.contracts.loadGroupCriteria(
+    database,
+    contractAccess.isExtensionEnabled,
+    season ? seasonReference(season) : undefined
+  );
 }
 
 /** Critères déclarés par un module actuellement inactif : leurs groupes ne sont pas recalculés. */
@@ -47,11 +54,11 @@ function unavailableCriterionKeys(available: ResolvedGroupCriterion[]) {
   );
 }
 
-export async function getDynamicGroupCriteria(database: Queryable) {
+export async function getDynamicGroupCriteria(database: Queryable, season: Season) {
   const [fields, members, contributed] = await Promise.all([
     getCriterionFields(database),
-    getActiveMembers(database),
-    contributedCriteria(database)
+    getActiveMembers(database, season.id),
+    contributedCriteria(database, season)
   ]);
   const all = [
     ...fields,
@@ -93,17 +100,40 @@ export async function validateDynamicCriterion(database: Queryable, fieldKey: st
   return normalizedValues.length > 0 ? { field, values: normalizedValues } : null;
 }
 
+/**
+ * Recalcule la composition des groupes à critère, saison par saison : les groupes sont
+ * communs, mais un critère comme la catégorie d'âge dépend de l'année de la saison.
+ */
 export async function refreshDynamicGroups(database: Queryable) {
-  const [groupsResult, rulesResult, members, contributed] = await Promise.all([
+  const [groupsResult, rulesResult, seasons] = await Promise.all([
     database.query<{ id: string }>("SELECT id FROM groups WHERE source = 'dynamic'"),
     database.query<{ groupId: string; fieldKey: string; value: string }>(`
       SELECT group_id AS "groupId", field_key AS "fieldKey", match_value AS value
       FROM group_dynamic_rules
       ORDER BY group_id
     `),
-    getActiveMembers(database),
-    contributedCriteria(database)
+    listSeasons(database)
   ]);
+  if (groupsResult.rows.length === 0) return;
+  for (const season of seasons) {
+    const [members, contributed] = await Promise.all([
+      getActiveMembers(database, season.id),
+      contributedCriteria(database, season)
+    ]);
+    await refreshSeasonGroups(database, season, groupsResult.rows, rulesResult.rows, members, contributed);
+  }
+}
+
+async function refreshSeasonGroups(
+  database: Queryable,
+  season: Season,
+  groups: Array<{ id: string }>,
+  rules: Array<{ groupId: string; fieldKey: string; value: string }>,
+  members: DynamicMember[],
+  contributed: ResolvedGroupCriterion[]
+) {
+  const groupsResult = { rows: groups };
+  const rulesResult = { rows: rules };
   const unavailable = unavailableCriterionKeys(contributed);
   const rulesByGroup = new Map<string, Array<{ fieldKey: string; value: string }>>();
   for (const rule of rulesResult.rows) {
@@ -118,8 +148,9 @@ export async function refreshDynamicGroups(database: Queryable) {
     // recalculer viderait sa composition alors que les données doivent être conservées.
     if (rules.some((rule) => unavailable.has(rule.fieldKey))) continue;
     await database.query(
-      "DELETE FROM member_groups WHERE group_id = $1 AND source = 'dynamic'",
-      [groupId]
+      `DELETE FROM member_groups mg USING members m
+       WHERE mg.member_id = m.id AND m.season_id = $2 AND mg.group_id = $1 AND mg.source = 'dynamic'`,
+      [groupId, season.id]
     );
     const matchingIds = members
       .filter((member) => rules.some((rule) => memberCriterionValues(member, rule.fieldKey, contributed).includes(rule.value)))
@@ -153,17 +184,18 @@ async function getCriterionFields(database: Queryable) {
   ] satisfies CriterionField[];
 }
 
-async function getActiveMembers(database: Queryable) {
+async function getActiveMembers(database: Queryable, seasonId: string) {
   const result = await database.query<DynamicMember>(`
     SELECT
       id,
+      season_id AS "seasonId",
       COALESCE(source_data, '{}'::jsonb) AS "sourceData",
       COALESCE(profile_data, '{}'::jsonb) AS "profileData",
       COALESCE(local_overrides, '{}'::jsonb) AS "localOverrides",
       to_char(birth_date, 'YYYY-MM-DD') AS "birthDate"
     FROM members
-    WHERE status = 'active' AND locally_deleted_at IS NULL
-  `);
+    WHERE status = 'active' AND locally_deleted_at IS NULL AND season_id = $1
+  `, [seasonId]);
   return result.rows;
 }
 

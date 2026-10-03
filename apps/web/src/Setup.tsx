@@ -3,7 +3,7 @@ import { api, type GroupRule, type GroupingPreview, type HelloAssoSettings, type
 
 type GroupDraft = { localId: string; id?: string; name: string; rules: GroupRule[] };
 
-export function Setup({ helloassoConfigured, onImported, onConfigurationChanged }: { helloassoConfigured: boolean; onImported: () => void; onConfigurationChanged: () => void }) {
+export function Setup({ seasonLabel, helloassoConfigured, onImported, onConfigurationChanged }: { seasonLabel: string | null; helloassoConfigured: boolean; onImported: () => void; onConfigurationChanged: () => void }) {
   const [data, setData] = useState<SetupData | null>(null);
   const [campaignSelection, setCampaignSelection] = useState<Set<string>>(new Set());
   const [fieldSelection, setFieldSelection] = useState<Set<string>>(new Set());
@@ -266,15 +266,15 @@ export function Setup({ helloassoConfigured, onImported, onConfigurationChanged 
 
     {step === 2 && <section className="panel setup-section">
       <div className="setup-section-header">
-        <StepHeading number="2" title="Choisir les campagnes d’adhésion" />
+        <StepHeading number="2" title={seasonLabel ? `Campagnes d’adhésion de la saison ${seasonLabel}` : "Choisir les campagnes d’adhésion"} />
         <button className="secondary" disabled={!(connection?.configured ?? helloassoConfigured) || busy !== null} onClick={() => void discover()} type="button">
           {busy === "discover" ? "Recherche…" : data?.campaigns.length ? "Actualiser" : "Rechercher sur HelloAsso"}
         </button>
       </div>
       {!data?.campaigns.length ? <p className="muted setup-hint">Lancez la recherche pour afficher les campagnes disponibles.</p> : <>
         <div className="campaign-list">{visibleCampaigns.map((campaign) => <label className="choice-card" key={campaign.formSlug}>
-          <input type="checkbox" checked={campaignSelection.has(campaign.formSlug)} onChange={() => toggleCampaign(campaign.formSlug)} />
-          <span className="choice-copy"><span className="choice-title-row"><strong>{campaign.title}</strong><span className={campaign.current ? "state-pill current" : "state-pill"}>{campaign.current ? "En cours" : campaign.state}</span></span><span>{formatPeriod(campaign.startDate, campaign.endDate)}</span></span>
+          <input type="checkbox" disabled={Boolean(campaign.seasonId && !campaign.selected)} checked={campaignSelection.has(campaign.formSlug)} onChange={() => toggleCampaign(campaign.formSlug)} />
+          <span className="choice-copy"><span className="choice-title-row"><strong>{campaign.title}</strong><span className={campaign.current ? "state-pill current" : "state-pill"}>{campaign.current ? "En cours" : campaign.state}</span></span><span>{formatPeriod(campaign.startDate, campaign.endDate)}{campaign.seasonLabel && !campaign.selected ? ` · déjà rattachée à la saison ${campaign.seasonLabel}` : ""}</span></span>
         </label>)}</div>
         <button className="link-button" type="button" onClick={() => setShowArchives((value) => !value)}>{showArchives ? "Masquer les anciennes campagnes" : `Voir les campagnes archivées (${data.campaigns.filter((campaign) => !campaign.current).length})`}</button>
         <div className="setup-actions"><span>{campaignSelection.size} campagne{campaignSelection.size > 1 ? "s" : ""} sélectionnée{campaignSelection.size > 1 ? "s" : ""}</span><button className="primary" disabled={campaignSelection.size === 0 || busy !== null} onClick={() => void analyzeCampaigns()} type="button">{busy === "campaigns" ? "Analyse des inscriptions…" : "Valider et analyser les champs"}</button></div>

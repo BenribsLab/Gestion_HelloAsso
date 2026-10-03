@@ -29,13 +29,17 @@ import {
 } from "./documents.js";
 import {
   discoverCampaigns,
+  findPersonId,
   getSetupState,
   importMembers,
+  mapSeasonField,
   previewGrouping,
   saveGroupDefinitions,
+  seasonFieldCheck,
   selectCampaigns,
   selectFields
 } from "./setup.js";
+import { registerSeasonRoutes, requestSeason, seasonById, seasonReference } from "./seasons.js";
 
 const config = loadConfig();
 const database = createDatabase(config);
@@ -78,6 +82,7 @@ configureDynamicGroups({ contracts, isExtensionEnabled: (id) => extensions.isEna
 await loadExtensions({ server, database, config, contracts, registry: extensions, helloasso, settings: secureSettings });
 registerExtensionInstaller(server, database, config, extensions);
 registerAttestationRoutes({ server, database, contracts, isExtensionEnabled: (id) => extensions.isEnabled(id) });
+registerSeasonRoutes(server, database);
 
 server.addHook("preHandler", async (request, reply) => {
   const path = request.url.split("?", 1)[0] ?? request.url;
@@ -226,9 +231,13 @@ server.get("/api/extensions/:extensionId/assets/*", async (request, reply) => {
   return reply.send(content);
 });
 
-server.get("/api/dashboard", async () => {
+server.get("/api/dashboard", async (request) => {
+  const season = await requestSeason(database, request);
   const [memberResult, groupResult, helloassoStatus] = await Promise.all([
-    database.query<{ count: string }>("SELECT count(*)::text AS count FROM members WHERE locally_deleted_at IS NULL"),
+    database.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM members WHERE locally_deleted_at IS NULL AND season_id = $1",
+      [season.id]
+    ),
     database.query<{ count: string }>("SELECT count(*)::text AS count FROM groups"),
     helloassoSettings.status()
   ]);
@@ -244,14 +253,16 @@ server.get("/api/dashboard", async () => {
   };
 });
 
-server.get("/api/members", async () => {
+server.get("/api/members", async (request) => {
+  const season = await requestSeason(database, request);
   await ensureMemberFieldInputs(database);
-  const categoryContext = await contracts.loadMemberCategoryContext(database, (id) => extensions.isEnabled(id));
+  const categoryContext = await contracts.loadMemberCategoryContext(database, (id) => extensions.isEnabled(id), seasonReference(season));
   const requirements = contracts.activeMemberFieldRequirements((id) => extensions.isEnabled(id));
   const resolvedModuleFields = await resolveModuleFields(database, requirements);
   const moduleFields = resolvedModuleFields.filter((field) => !field.selected);
   const [result, fieldsResult, documentsResult] = await Promise.all([database.query<{
     id: string;
+    personId: string;
     firstName: string;
     lastName: string;
     email: string | null;
@@ -269,6 +280,7 @@ server.get("/api/members", async () => {
   }>(`
     SELECT
       m.id,
+      m.person_id AS "personId",
       COALESCE(NULLIF(m.local_overrides->>'firstName', ''), m.first_name) AS "firstName",
       COALESCE(NULLIF(m.local_overrides->>'lastName', ''), m.last_name) AS "lastName",
       CASE WHEN m.local_overrides ? 'email' THEN NULLIF(m.local_overrides->>'email', '') ELSE m.email END AS email,
@@ -300,10 +312,10 @@ server.get("/api/members", async () => {
     ) birth ON true
     LEFT JOIN member_groups mg ON mg.member_id = m.id
     LEFT JOIN groups g ON g.id = mg.group_id
-    WHERE m.locally_deleted_at IS NULL
+    WHERE m.locally_deleted_at IS NULL AND m.season_id = $1
     GROUP BY m.id, birth.value
     ORDER BY m.last_name, m.first_name
-  `), database.query<{ key: string; label: string; type: string; source: "helloasso" | "local"; documentRole: "health" | null; inputMode: "auto" | "text" | "select"; options: unknown }>(`
+  `, [season.id]), database.query<{ key: string; label: string; type: string; source: "helloasso" | "local"; documentRole: "health" | null; inputMode: "auto" | "text" | "select"; options: unknown }>(`
     SELECT field_key AS key, label, field_type AS type, source, document_role AS "documentRole",
            input_mode AS "inputMode", choice_options AS options
     FROM helloasso_fields WHERE selected = true ORDER BY label
@@ -312,6 +324,7 @@ server.get("/api/members", async () => {
     helloassoName: string | null; localName: string | null; helloassoMediaType: string | null;
     localMediaType: string | null; helloassoSizeBytes: number | null; localSizeBytes: number | null;
     classification: DocumentClassification; classificationSource: "automatic" | "manual"; analyzedAt: Date | null;
+    certificateDate: string | null;
   }>(`
     SELECT member_id AS "memberId", field_key AS "fieldKey",
            helloasso_url IS NOT NULL AS "helloassoAvailable",
@@ -319,10 +332,30 @@ server.get("/api/members", async () => {
            helloasso_name AS "helloassoName", local_name AS "localName",
            helloasso_media_type AS "helloassoMediaType", local_media_type AS "localMediaType",
            helloasso_size_bytes AS "helloassoSizeBytes", local_size_bytes AS "localSizeBytes",
-           classification, classification_source AS "classificationSource", analyzed_at AS "analyzedAt"
-    FROM member_documents
-  `)]);
+           classification, classification_source AS "classificationSource", analyzed_at AS "analyzedAt",
+           to_char(d.certificate_date, 'YYYY-MM-DD') AS "certificateDate"
+    FROM member_documents d
+    JOIN members m ON m.id = d.member_id AND m.season_id = $1
+  `, [season.id])]);
   const documents = new Map(documentsResult.rows.map((document) => [`${document.memberId}\0${document.fieldKey}`, document]));
+  // Certificat médical daté d'une saison précédente : valable 3 saisons (celle de sa date et
+  // les deux suivantes). Les années suivantes, l'adhérent fournit une attestation de santé.
+  const previousCertificates = await database.query<{ personId: string; certificateDate: string; seasonLabel: string }>(`
+    SELECT DISTINCT ON (m.person_id) m.person_id AS "personId",
+           to_char(d.certificate_date, 'YYYY-MM-DD') AS "certificateDate", s.label AS "seasonLabel"
+    FROM member_documents d
+    JOIN members m ON m.id = d.member_id AND m.season_id <> $1
+    JOIN seasons s ON s.id = m.season_id
+    WHERE d.classification = 'certificate' AND d.certificate_date IS NOT NULL
+      AND d.certificate_date < $2::date
+      AND m.person_id IN (SELECT person_id FROM members WHERE season_id = $1)
+    ORDER BY m.person_id, d.certificate_date DESC
+  `, [season.id, season.endsOn]);
+  const previousCertificateByPerson = new Map(previousCertificates.rows.map((row) => [row.personId, {
+    date: row.certificateDate,
+    seasonLabel: row.seasonLabel,
+    valid: season.startYear - certificateSeasonStartYear(row.certificateDate) <= 2
+  }]));
   return {
     fields: fieldsResult.rows.map((field) => ({ ...field, options: stringOptions(field.options) })),
     moduleFields,
@@ -338,6 +371,7 @@ server.get("/api/members", async () => {
         ...member,
         birthDate,
         ...(categoryContext?.compute(birthDate) ?? { fencingCategory: null, categoryError: null }),
+        previousCertificate: previousCertificateByPerson.get(member.personId) ?? null,
         overriddenFields: ["firstName", "lastName", "email", "phone", "birthDate"].filter(
           (key) => Object.hasOwn(member.localOverrides, key)
         ),
@@ -364,6 +398,7 @@ server.get("/api/members", async () => {
               classificationSource: document?.classificationSource ?? "automatic",
               health: field.documentRole === "health",
               analyzedAt: document?.analyzedAt ?? null,
+              certificateDate: document?.certificateDate ?? null,
               hasHelloAssoOriginal: Boolean(document?.helloassoAvailable)
             } : undefined
           };
@@ -448,6 +483,7 @@ server.put("/api/member-fields/:fieldKey/input", async (request, reply) => {
 
 server.post("/api/members", async (request, reply) => {
   const input = memberCreateSchema.parse(request.body);
+  const season = await requestSeason(database, request);
   const groupIds = [...new Set(input.groupIds)];
   const fieldKeys = Object.keys(input.profileData);
   const moduleFields = await resolveModuleFields(
@@ -503,11 +539,14 @@ server.post("/api/members", async (request, reply) => {
         phone = value === null ? null : String(value);
       }
     }
+    // Personne déjà inscrite une saison précédente : la nouvelle inscription lui est rattachée.
+    const personId = await findPersonId(client, season.id, input.firstName, input.lastName, birthDate);
     const memberResult = await client.query<{ id: string }>(
-      `INSERT INTO members (first_name, last_name, email, phone, birth_date, status, source, profile_data, module_data)
-       VALUES ($1, $2, $3, $4, $5, 'active', 'manual', $6, $7)
+      `INSERT INTO members (first_name, last_name, email, phone, birth_date, status, source, profile_data, module_data,
+                            season_id, person_id)
+       VALUES ($1, $2, $3, $4, $5, 'active', 'manual', $6, $7, $8, COALESCE($9::uuid, gen_random_uuid()))
        RETURNING id`,
-      [input.firstName, input.lastName, input.email, phone, birthDate, input.profileData, input.moduleData]
+      [input.firstName, input.lastName, input.email, phone, birthDate, input.profileData, input.moduleData, season.id, personId]
     );
     await rememberChoiceOptions(client, fields, input.profileData);
     const memberId = memberResult.rows[0]!.id;
@@ -529,7 +568,8 @@ server.post("/api/members", async (request, reply) => {
   }
 });
 
-server.get("/api/groups", async () => {
+server.get("/api/groups", async (request) => {
+  const season = await requestSeason(database, request);
   await refreshDynamicGroups(database);
   const [result, schedulesByGroup] = await Promise.all([
     database.query<{
@@ -557,10 +597,11 @@ server.get("/api/groups", async () => {
         (SELECT count(*)::int
          FROM member_groups mg
          JOIN members member_count ON member_count.id = mg.member_id
-         WHERE mg.group_id = g.id AND member_count.locally_deleted_at IS NULL) AS "membersCount"
+         WHERE mg.group_id = g.id AND member_count.locally_deleted_at IS NULL
+           AND member_count.season_id = $1) AS "membersCount"
       FROM groups g
       ORDER BY g.name
-    `),
+    `, [season.id]),
     contracts.loadGroupSchedules(database, (id) => extensions.isEnabled(id))
   ]);
   return {
@@ -571,7 +612,9 @@ server.get("/api/groups", async () => {
   };
 });
 
-server.get("/api/group-criteria", async () => ({ items: await getDynamicGroupCriteria(database) }));
+server.get("/api/group-criteria", async (request) => ({
+  items: await getDynamicGroupCriteria(database, await requestSeason(database, request))
+}));
 
 server.post("/api/groups", async (request, reply) => {
   const input = groupInputSchema.parse(request.body);
@@ -614,8 +657,10 @@ server.post("/api/groups", async (request, reply) => {
     }
     await refreshDynamicGroups(client);
     const countResult = await client.query<{ count: number }>(
-      "SELECT count(*)::int AS count FROM member_groups WHERE group_id = $1",
-      [group.id]
+      `SELECT count(*)::int AS count FROM member_groups mg
+       JOIN members m ON m.id = mg.member_id AND m.season_id = $2
+       WHERE mg.group_id = $1`,
+      [group.id, (await requestSeason(client, request)).id]
     );
     await client.query("COMMIT");
     return reply.code(201).send({
@@ -1063,6 +1108,21 @@ server.post("/api/members/:memberId/documents/:fieldKey", {
   return { uploaded: true, classification: recognition?.classification ?? "unknown" };
 });
 
+// Date du certificat médical, saisie à la main : un certificat reste valable 3 saisons.
+server.put("/api/members/:memberId/documents/:fieldKey/certificate-date", async (request, reply) => {
+  const input = memberDocumentSchema.parse(request.params);
+  const { certificateDate } = z.object({
+    certificateDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable()
+  }).parse(request.body);
+  const result = await database.query(
+    `UPDATE member_documents SET certificate_date = $3::date, updated_at = now()
+     WHERE member_id = $1 AND field_key = $2`,
+    [input.memberId, input.fieldKey, certificateDate]
+  );
+  if (!result.rowCount) return reply.code(404).send({ message: "Ce document n'existe pas." });
+  return { memberId: input.memberId, fieldKey: input.fieldKey, certificateDate };
+});
+
 server.delete("/api/members/:memberId/documents/:fieldKey/local", async (request, reply) => {
   const input = memberDocumentSchema.parse(request.params);
   const result = await database.query(`
@@ -1116,20 +1176,51 @@ server.post("/api/helloasso/check", async (_request, reply) => {
   return reply.send({ connected: true, organization });
 });
 
-server.get("/api/setup", async () => getSetupState(database));
+server.get("/api/setup", async (request) => getSetupState(database, (await requestSeason(database, request)).id));
 
-server.post("/api/helloasso/discover-campaigns", async () =>
-  discoverCampaigns(database, helloasso)
+server.post("/api/helloasso/discover-campaigns", async (request) =>
+  discoverCampaigns(database, helloasso, (await requestSeason(database, request)).id)
 );
 
-server.put("/api/setup/campaigns", async (request) => {
+server.put("/api/setup/campaigns", async (request, reply) => {
   const input = campaignSelectionSchema.parse(request.body);
-  return selectCampaigns(database, helloasso, [...new Set(input.formSlugs)]);
+  const season = await requestSeason(database, request);
+  try {
+    return await selectCampaigns(database, helloasso, season.id, [...new Set(input.formSlugs)]);
+  } catch (error) {
+    if (error instanceof Error && /déjà rattachée|n'est pas connue/.test(error.message)) {
+      return reply.code(409).send({ message: error.message });
+    }
+    throw error;
+  }
 });
 
 server.put("/api/setup/fields", async (request) => {
   const input = fieldSelectionSchema.parse(request.body);
-  return selectFields(database, [...new Set(input.fieldKeys)], input.healthDocumentFieldKey ?? null);
+  const season = await requestSeason(database, request);
+  return selectFields(database, season.id, [...new Set(input.fieldKeys)], input.healthDocumentFieldKey ?? null);
+});
+
+// Contrôle des champs HelloAsso d'une saison et correspondance manuelle d'un champ renommé.
+server.get("/api/seasons/:seasonId/fields", async (request, reply) => {
+  const { seasonId } = z.object({ seasonId: z.uuid() }).parse(request.params);
+  if (!await seasonById(database, seasonId)) return reply.code(404).send({ message: "Cette saison n'existe pas." });
+  return seasonFieldCheck(database, seasonId);
+});
+
+server.put("/api/seasons/:seasonId/field-mapping", async (request, reply) => {
+  const { seasonId } = z.object({ seasonId: z.uuid() }).parse(request.params);
+  const input = z.object({
+    formSlug: z.string().min(1).max(200),
+    sourceFieldId: z.string().min(1).max(100),
+    fieldKey: z.string().min(1).max(100)
+  }).parse(request.body);
+  try {
+    return await mapSeasonField(database, seasonId, input);
+  } catch (error) {
+    if (error instanceof Error) return reply.code(400).send({ message: error.message });
+    throw error;
+  }
 });
 
 server.post("/api/setup/group-preview", async (request) => {
@@ -1140,7 +1231,7 @@ server.post("/api/setup/group-preview", async (request) => {
 server.put("/api/setup/groups", async (request, reply) => {
   const input = groupDefinitionsSchema.parse(request.body);
   try {
-    return await saveGroupDefinitions(database, input.groups);
+    return await saveGroupDefinitions(database, (await requestSeason(database, request)).id, input.groups);
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "23505") {
       return reply.code(409).send({ message: "Chaque groupe doit avoir un nom unique." });
@@ -1149,10 +1240,11 @@ server.put("/api/setup/groups", async (request, reply) => {
   }
 });
 
-server.post("/api/helloasso/import-members", { config: { rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async () =>
+server.post("/api/helloasso/import-members", { config: { rateLimit: { max: 5, timeWindow: "15 minutes" } } }, async (request) =>
   importMembers(
     database,
     helloasso,
+    await requestSeason(database, request),
     contracts.activeMemberFieldRequirements((id) => extensions.isEnabled(id))
   )
 );
@@ -1188,6 +1280,12 @@ server.setErrorHandler((error, _request, reply) => {
   server.log.error(error);
   return reply.code(500).send({ message: "Une erreur interne est survenue." });
 });
+
+/** Saison (année de début) d'une date : la saison bascule au 1er septembre. */
+function certificateSeasonStartYear(date: string) {
+  const [year, month] = date.split("-").map(Number);
+  return month! >= 9 ? year! : year! - 1;
+}
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -1229,7 +1327,7 @@ async function resetHelloAssoSetup() {
   const client = await database.connect();
   try {
     await client.query("BEGIN");
-    await client.query("UPDATE helloasso_campaigns SET selected = false, updated_at = now() WHERE selected = true");
+    await client.query("UPDATE helloasso_campaigns SET selected = false, season_id = NULL, updated_at = now() WHERE selected = true");
     await client.query("DELETE FROM app_settings WHERE key IN ('helloasso_setup', 'helloasso_groups')");
     await client.query("COMMIT");
   } catch (error) {

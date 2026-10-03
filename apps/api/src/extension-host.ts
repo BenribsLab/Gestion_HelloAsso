@@ -137,6 +137,25 @@ export interface ExtensionHostCore {
   };
 }
 
+/** Saison sportive : une fiche adhérent (`members`) appartient toujours à une saison. */
+export interface ExtensionSeason {
+  id: string;
+  label: string;
+  /** Dates au format AAAA-MM-JJ. */
+  startsOn: string;
+  endsOn: string;
+  startYear: number;
+}
+
+export interface ExtensionHostSeasons {
+  /** Saison sélectionnée dans l'écran à l'origine de la requête, sinon la saison du jour. */
+  fromRequest(request: Pick<ExtensionRequest, "headers">): Promise<ExtensionSeason>;
+  /** Saison qui contient la date du jour (API publique, tâches planifiées…). */
+  current(): Promise<ExtensionSeason>;
+  list(): Promise<ExtensionSeason[]>;
+  byId(seasonId: string): Promise<ExtensionSeason | null>;
+}
+
 export interface ExtensionServerHost {
   readonly id: string;
   readonly version: string;
@@ -147,6 +166,8 @@ export interface ExtensionServerHost {
   /** Stockage chiffré, automatiquement isolé dans l'espace de noms du module. */
   readonly settings: ExtensionHostSettings;
   readonly core: ExtensionHostCore;
+  /** Saisons. Absent d'un cœur antérieur aux saisons : prévoir un repli. */
+  readonly seasons?: ExtensionHostSeasons;
   /** Pour les dépendances facultatives : un module peut consulter l'état d'un autre. */
   isExtensionEnabled(extensionId: string): boolean;
   /** Le chemin doit être couvert par un préfixe déclaré dans `routes` du manifeste. */

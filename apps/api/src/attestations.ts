@@ -122,7 +122,8 @@ export function registerAttestationRoutes(options: {
         memberCivility: "",
         firstName: member.firstName,
         lastName: member.lastName,
-        season: currentSeason(),
+        // Saison de l'inscription (chaque fiche appartient à une saison).
+        season: member.seasonLabel,
         amount: member.amountCents === null ? null : member.amountCents / 100,
         payerCivility: "",
         payerFirstName: member.payerFirstName ?? "",
@@ -236,6 +237,7 @@ async function readMember(database: Database, memberId: string) {
     options: Array<{ name: string; amount: number }>;
     payments: Array<{ date: string | null; state: string | null; installmentNumber: number | null; amount: number }>;
     payerFirstName: string | null; payerLastName: string | null; payerEmail: string | null;
+    seasonLabel: string;
   }>(`
     SELECT
       COALESCE(NULLIF(m.local_overrides->>'firstName', ''), m.first_name) AS "firstName",
@@ -253,7 +255,9 @@ async function readMember(database: Database, memberId: string) {
       ${payer("payerFirstName")} AS "payerFirstName",
       ${payer("payerLastName")} AS "payerLastName",
       ${payer("payerEmail")} AS "payerEmail"
+      , s.label AS "seasonLabel"
     FROM members m
+    JOIN seasons s ON s.id = m.season_id
     WHERE m.id = $1 AND m.locally_deleted_at IS NULL
   `, [memberId]);
   return result.rows[0] ?? null;
@@ -276,13 +280,6 @@ async function recordAttestation(
     [memberId, userId, delivery, recipientEmail, input.season, input.amount === null ? null : Math.round(input.amount * 100)]
   );
   return result.rows[0]!.reference;
-}
-
-/** Saison sportive : de septembre à août. */
-function currentSeason(now = new Date()) {
-  const year = now.getUTCFullYear();
-  const start = now.getUTCMonth() >= 8 ? year : year - 1;
-  return `${start}/${start + 1}`;
 }
 
 function imageType(content: Buffer) {

@@ -14,7 +14,11 @@ import {
  * module ne voit ni React, ni le client d'API complet, seulement de quoi appeler le serveur
  * avec la session en cours et se déclarer auprès du cœur.
  */
+export type ExtensionWebHostSeason = { id: string; label: string; startsOn: string; endsOn: string; startYear: number };
+
 export type ExtensionWebHost = {
+  /** Saison ouverte dans l'application (changer de saison recharge la page). */
+  season: ExtensionWebHostSeason | null;
   request: typeof request;
   requestBlob: typeof requestBlob;
   registerView(view: RegisteredExtensionView): void;
@@ -35,6 +39,7 @@ const importedBundles = new Set<string>();
 
 export function installExtensionHost() {
   window.__GU_HOST__ ??= {
+    season: null,
     request,
     requestBlob,
     registerView: (view) => uiContracts.registerView(view),
@@ -44,6 +49,11 @@ export function installExtensionHost() {
     registerDocumentPanel: (panel) => uiContracts.registerDocumentPanel(panel),
     registerMemberDetailPanel: (panel) => uiContracts.registerMemberDetailPanel(panel)
   };
+}
+
+export function setHostSeason(season: ExtensionWebHostSeason | null) {
+  installExtensionHost();
+  window.__GU_HOST__!.season = season;
 }
 
 /**

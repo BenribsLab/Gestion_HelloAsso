@@ -678,3 +678,19 @@ th { color: var(--ink-500); font-family: var(--font-mono); font-size: 11px; font
 .attestation-payment li.is-ignored { color: var(--ink-300); text-decoration: line-through; }
 .attestation-payment li.is-total { margin-top: 4px; padding-top: 6px; border-top: 1px solid var(--line); color: var(--ink-950); font-weight: 650; }
 .origin-filter { flex: 0 0 auto; }
+
+/* ---------- Saisons ------------------------------------------------------------------- */
+.season-picker { display: grid; gap: 3px; }
+.season-picker select { width: auto; min-height: 30px; padding: 2px 30px 2px 10px; font-size: 14px; font-weight: 600; }
+.season-banner { margin: 0 0 18px; }
+.season-form { display: grid; gap: 14px; }
+.season-dates { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.list-rows .badge { margin-left: 8px; }
+.list-rows select { width: auto; max-width: 320px; }
+@media (max-width: 720px) { .season-dates { grid-template-columns: 1fr; } }
+.alert.warning { border-color: #f0d9a8; background: var(--warning-wash); color: var(--warning); }
+.alert.info { border-color: var(--line); background: var(--paper-3); color: var(--ink-700); }
+.season-banner .link-button { margin-left: 6px; }
+.certificate-date { margin-top: 10px; }
+.certificate-date input { max-width: 200px; }
+.certificate-previous { margin: 8px 0 0; font-size: 13px; }

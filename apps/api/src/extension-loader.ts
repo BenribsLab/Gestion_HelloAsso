@@ -1,4 +1,5 @@
 import { join, resolve, sep } from "node:path";
+import { currentSeason, listSeasons, requestSeason, seasonById } from "./seasons.js";
 import { pathToFileURL } from "node:url";
 import type { FastifyInstance } from "fastify";
 import type { AppConfig } from "./config.js";
@@ -132,6 +133,12 @@ function buildHost(options: LoadOptions, manifest: ExtensionManifest): Extension
       canWriteSecrets: () => options.settings.canWriteSecrets()
     },
     core,
+    seasons: {
+      fromRequest: (request) => requestSeason(options.database, request),
+      current: () => currentSeason(options.database),
+      list: () => listSeasons(options.database),
+      byId: (seasonId) => seasonById(options.database, seasonId)
+    },
     isExtensionEnabled: (extensionId: string) => options.registry.isEnabled(extensionId),
     route(
       method: ExtensionRouteMethod,

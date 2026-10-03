@@ -1,14 +1,15 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type AuthUser, type DashboardData, type Extension, type ExtensionConfiguration, type ExtensionInstallation, type Group, type GroupCriterion, type ManagedUser, type Member, type MemberField, type ModuleField } from "./api";
+import { api, setSelectedSeason, storedSeasonId, type SeasonsState, type AuthUser, type DashboardData, type Extension, type ExtensionConfiguration, type ExtensionInstallation, type Group, type GroupCriterion, type ManagedUser, type Member, type MemberField, type ModuleField } from "./api";
 import { Setup } from "./Setup";
 import { ClubIdentityPanel } from "./ClubIdentity";
 import { MemberAttestation } from "./Attestation";
 import { uiContracts, type RegisteredDocumentPanel, type RegisteredGroupPanel, type RegisteredMemberAction, type RegisteredMemberColumn, type RegisteredMemberDetailPanel } from "./extension-contracts";
 import { CategoryBadge, memberCategoryLabel } from "./extensions/fencing-categories";
-import { loadExtensionBundles } from "./extension-runtime";
+import { loadExtensionBundles, setHostSeason } from "./extension-runtime";
+import { Seasons, openSeason } from "./Seasons";
 import { NavIcon } from "./icons";
 
-type CoreView = "dashboard" | "members" | "groups" | "setup" | "extensions";
+type CoreView = "dashboard" | "members" | "groups" | "setup" | "extensions" | "seasons";
 /** Une vue apportée par un module est identifiée par son identifiant d'extension. */
 type View = CoreView | `ext:${string}`;
 type MemberDraft = {
@@ -46,10 +47,20 @@ export function App() {
   const [authReady, setAuthReady] = useState(false);
   const [authEnabled, setAuthEnabled] = useState(true);
   const [accountOpen, setAccountOpen] = useState(false);
+  const [seasons, setSeasons] = useState<SeasonsState | null>(null);
 
   const loadData = useCallback(async () => {
     try {
       setError(null);
+      // La saison passe en premier : toutes les requêtes suivantes portent la saison ouverte.
+      const seasonData = await api.seasons();
+      if (storedSeasonId() !== seasonData.selectedId) setSelectedSeason(seasonData.selectedId);
+      setSeasons(seasonData);
+      const openedSeason = seasonData.items.find((season) => season.id === seasonData.selectedId) ?? null;
+      setHostSeason(openedSeason && {
+        id: openedSeason.id, label: openedSeason.label, startsOn: openedSeason.startsOn,
+        endsOn: openedSeason.endsOn, startYear: openedSeason.startYear
+      });
       const extensionData = await api.extensions();
       // Les bundles des modules actifs s'enregistrent (menu, vue) avant le premier rendu.
       await loadExtensionBundles(extensionData.items);
@@ -351,6 +362,9 @@ export function App() {
           </div>}
           <div className="nav-group">
             <p className="nav-label">Réglages</p>
+            <NavButton icon="seasons" active={view === "seasons"} onClick={() => navigate("seasons")}>
+              Saisons
+            </NavButton>
             <NavButton icon="setup" active={view === "setup"} onClick={() => navigate("setup")}>
               Configuration
             </NavButton>
@@ -365,12 +379,18 @@ export function App() {
       <main>
         <header className="topbar">
           <div>
-            <p className="eyebrow">Saison en préparation</p>
+            {seasons && seasons.items.length > 0 ? <label className="season-picker eyebrow">
+              <span className="sr-only">Saison ouverte</span>
+              <select value={seasons.selectedId} onChange={(event) => openSeason(event.target.value)} aria-label="Saison ouverte">
+                {seasons.items.map((season) => <option key={season.id} value={season.id}>Saison {season.label}{season.id === seasons.currentId ? " · en cours" : ""}</option>)}
+              </select>
+            </label> : <p className="eyebrow">Saison</p>}
             <h1>{viewTitle(view)}</h1>
           </div>
           {authEnabled ? <button className="initials account-button" type="button" aria-label="Ouvrir mon compte" title={authUser.email} onClick={() => setAccountOpen(true)}>{userInitials(authUser)}</button> : <div className="initials" aria-label="Compte administrateur local">AD</div>}
         </header>
 
+        {seasons && <SeasonBanner state={seasons} />}
         {error && <div className="alert error">{error}</div>}
         {loading ? (
           <div className="loading">Chargement du serveur local…</div>
@@ -448,9 +468,11 @@ export function App() {
                 memberDetailPanels={memberDetailPanels}
               />
             )}
+            {view === "seasons" && seasons && <Seasons state={seasons} onOpenSetup={() => navigate("setup")} onChanged={loadData} />}
             {view === "setup" && dashboard && (
               <div className="page-stack">
                 <Setup
+                  seasonLabel={seasons?.items.find((season) => season.id === seasons.selectedId)?.label ?? null}
                   helloassoConfigured={dashboard.helloasso.configured}
                   onImported={() => void loadData()}
                   onConfigurationChanged={() => void loadData()}
@@ -465,6 +487,21 @@ export function App() {
       </main>
     </div>
   );
+}
+
+/** Avertit qu'on travaille dans une saison terminée (modifiable quand même) ou à venir. */
+function SeasonBanner({ state }: { state: SeasonsState }) {
+  const season = state.items.find((item) => item.id === state.selectedId);
+  if (!season || season.id === state.currentId) return null;
+  const today = new Date().toISOString().slice(0, 10);
+  const current = state.items.find((item) => item.id === state.currentId);
+  const back = current ? <button className="link-button" type="button" onClick={() => openSeason(current.id)}>Revenir à la saison {current.label}</button> : null;
+  if (season.endsOn < today) {
+    return <div className="alert warning season-banner" role="status">
+      Vous travaillez dans la saison {season.label}, terminée. Les modifications restent possibles : vérifiez avant d'enregistrer. {back}
+    </div>;
+  }
+  return <div className="alert season-banner info" role="status">Vous préparez la saison {season.label}, qui n'a pas encore commencé. {back}</div>;
 }
 
 function NavButton({
@@ -611,7 +648,7 @@ function userInitials(user: AuthUser) {
  * fond assombri sont fournis par le navigateur. Rien à voir avec une fenêtre surgissante, donc
  * jamais bloquée. `variant="drawer"` l'ouvre en panneau latéral pour garder la liste visible.
  */
-function Modal({
+export function Modal({
   title,
   eyebrow,
   size = "medium",
@@ -1534,9 +1571,51 @@ function MemberDocument({ member, field, onChanged, documentPanels }: {
       <div className="document-actions"><a className="secondary compact-button" href={api.memberDocumentUrl(member.id, field.key)} target="_blank" rel="noreferrer">Voir</a><a className="secondary compact-button" href={api.memberDocumentUrl(member.id, field.key, true)}>Télécharger</a></div>
     </div> : <p className="empty-inline">Aucun fichier fourni.</p>}
     {documentPanels.map((panel) => <ExtensionDocumentPanel key={panel.extensionId} panel={panel} member={member} field={field} onChanged={onChanged} />)}
+    {document?.available && document.health && document.classification === "certificate" && <CertificateDate member={member} field={field} onChanged={onChanged} />}
+    {document?.health && member.previousCertificate && <p className="muted certificate-previous">
+      Certificat du {formatDay(member.previousCertificate.date)} (saison {member.previousCertificate.seasonLabel}) : {member.previousCertificate.valid ? "encore valable cette saison, une attestation de santé suffit." : "plus valable, un nouveau certificat est nécessaire."}
+    </p>}
     <div className="document-local-actions"><label className="secondary compact-button file-button">{busy ? "Traitement…" : document?.available ? "Ajouter / remplacer localement" : "Ajouter localement"}<input type="file" accept="application/pdf,image/jpeg,image/png" disabled={busy} onChange={(event) => void upload(event.currentTarget.files?.[0])} /></label>{document?.source === "local" && <button className="revert-button" type="button" disabled={busy} onClick={() => void revert()}>{document.hasHelloAssoOriginal ? "Revenir à HelloAsso" : "Supprimer le fichier local"}</button>}</div>
     {error && <small className="field-error">{error}</small>}
   </div>;
+}
+
+/** Date du certificat médical : il reste valable la saison de sa date et les deux suivantes. */
+function CertificateDate({ member, field, onChanged }: {
+  member: Member;
+  field: Member["customFields"][number];
+  onChanged: () => Promise<void>;
+}) {
+  const saved = field.document?.certificateDate ?? "";
+  const [value, setValue] = useState(saved);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => setValue(saved), [saved]);
+
+  async function save(next: string) {
+    if (next === saved) return;
+    setBusy(true); setError(null);
+    try {
+      await api.setCertificateDate(member.id, field.key, next || null);
+      await onChanged();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Enregistrement impossible.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const startYear = saved ? (Number(saved.slice(5, 7)) >= 9 ? Number(saved.slice(0, 4)) : Number(saved.slice(0, 4)) - 1) : null;
+  return <label className="certificate-date">
+    Date du certificat médical
+    <input type="date" value={value} disabled={busy} max={new Date().toISOString().slice(0, 10)} onChange={(event) => setValue(event.target.value)} onBlur={(event) => void save(event.target.value)} />
+    <small>{startYear ? `Valable jusqu'à la saison ${startYear + 2}-${startYear + 3} incluse.` : "À renseigner : le certificat reste valable 3 saisons."}</small>
+    {error && <small className="field-error">{error}</small>}
+  </label>;
+}
+
+function formatDay(value: string) {
+  return new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "long", year: "numeric" }).format(new Date(`${value}T12:00:00`));
 }
 
 function memberDraft(member: Member): MemberDraft {
@@ -2004,6 +2083,7 @@ function viewTitle(view: View) {
   if (view === "groups") return "Groupes";
   if (view === "setup") return "Configuration HelloAsso";
   if (view === "extensions") return "Extensions";
+  if (view === "seasons") return "Saisons";
   return "Vue d'ensemble";
 }
 

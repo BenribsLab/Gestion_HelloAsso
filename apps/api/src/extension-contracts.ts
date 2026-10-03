@@ -57,7 +57,8 @@ export interface GroupCriterionDefinition {
 export interface GroupCriterionProvider<TContext = unknown> {
   extensionId: string;
   criterion: GroupCriterionDefinition;
-  loadContext(database: ExtensionQueryable): Promise<TContext>;
+  /** `reference` : date à l'intérieur de la saison pour laquelle le critère est calculé. */
+  loadContext(database: ExtensionQueryable, reference?: Date): Promise<TContext>;
   /** Valeurs possibles, dans l'ordre d'affichage. */
   values(context: TContext): string[];
   /** Valeurs de cet adhérent pour ce critère. */
@@ -156,12 +157,13 @@ export class ExtensionContracts {
 
   async loadGroupCriteria(
     database: ExtensionQueryable,
-    isExtensionEnabled: (extensionId: string) => boolean
+    isExtensionEnabled: (extensionId: string) => boolean,
+    reference?: Date
   ): Promise<ResolvedGroupCriterion[]> {
     const resolved: ResolvedGroupCriterion[] = [];
     for (const provider of this.groupCriterionProviders.values()) {
       if (!isExtensionEnabled(provider.extensionId)) continue;
-      const context = await provider.loadContext(database);
+      const context = await provider.loadContext(database, reference);
       resolved.push({
         criterion: provider.criterion,
         values: provider.values(context),

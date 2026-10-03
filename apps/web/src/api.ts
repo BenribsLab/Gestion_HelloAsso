@@ -83,8 +83,41 @@ export type ManagedUser = {
   lastLoginAt: string | null;
 };
 
+export type Season = {
+  id: string;
+  label: string;
+  startsOn: string;
+  endsOn: string;
+  startYear: number;
+  membersCount: number;
+  campaignsCount: number;
+};
+
+export type SeasonsState = {
+  currentId: string;
+  selectedId: string;
+  items: Season[];
+};
+
+export type SeasonFieldCheck = {
+  campaigns: Array<{ formSlug: string; title: string }>;
+  mapped: SeasonCampaignField[];
+  missing: Array<{ key: string; label: string; type: string; sameLabelCandidate: SeasonCampaignField | null }>;
+  candidates: SeasonCampaignField[];
+};
+
+export type SeasonCampaignField = {
+  formSlug: string;
+  sourceFieldId: string;
+  fieldKey: string;
+  label: string;
+  type: string;
+  manual: boolean;
+};
+
 export type Member = {
   id: string;
+  personId: string;
   firstName: string;
   lastName: string;
   email: string | null;
@@ -96,6 +129,8 @@ export type Member = {
   birthDate: string | null;
   fencingCategory: string | null;
   categoryError: string | null;
+  /** Certificat médical daté d'une saison précédente (valable 3 saisons). */
+  previousCertificate: { date: string; seasonLabel: string; valid: boolean } | null;
   overriddenFields: string[];
   customFields: Array<{
     key: string;
@@ -115,6 +150,7 @@ export type Member = {
       classificationSource: "automatic" | "manual";
       health: boolean;
       analyzedAt: string | null;
+      certificateDate: string | null;
       hasHelloAssoOriginal: boolean;
     };
   }>;
@@ -153,6 +189,8 @@ export type SetupData = {
     startDate: string | null;
     endDate: string | null;
     selected: boolean;
+    seasonId: string | null;
+    seasonLabel: string | null;
     current: boolean;
     fieldsCount: number;
   }>;
@@ -223,9 +261,34 @@ export type TrainingSchedule = {
 
 let csrfToken: string | null = null;
 
+/**
+ * Saison sélectionnée : envoyée avec chaque requête (cœur et extensions), le serveur s'en
+ * sert pour ne montrer que les données de cette saison.
+ */
+const seasonStorageKey = "gu-season";
+let selectedSeasonId: string | null = readStoredSeason();
+
+function readStoredSeason() {
+  // Stockage de session : chaque nouvelle ouverture de l'application repart sur la saison du jour.
+  try { return window.sessionStorage.getItem(seasonStorageKey); } catch { return null; }
+}
+
+export function storedSeasonId() {
+  return selectedSeasonId;
+}
+
+export function setSelectedSeason(seasonId: string | null) {
+  selectedSeasonId = seasonId;
+  try {
+    if (seasonId) window.sessionStorage.setItem(seasonStorageKey, seasonId);
+    else window.sessionStorage.removeItem(seasonStorageKey);
+  } catch { /* stockage indisponible : la saison reste valable pour cet onglet */ }
+}
+
 /** Exporté pour que les bundles de modules réutilisent la session et le jeton CSRF du cœur. */
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
+  if (selectedSeasonId && !headers.has("x-gu-season")) headers.set("x-gu-season", selectedSeasonId);
   if (init?.body && !(init.body instanceof FormData)) {
     headers.set("content-type", "application/json");
   }
@@ -254,6 +317,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 /** Exporté pour que les bundles de modules puissent télécharger un fichier binaire produit par le serveur. */
 export async function requestBlob(path: string, init?: RequestInit) {
   const headers = new Headers(init?.headers);
+  if (selectedSeasonId && !headers.has("x-gu-season")) headers.set("x-gu-season", selectedSeasonId);
   const method = (init?.method ?? "GET").toUpperCase();
   if (init?.body && !(init.body instanceof FormData)) headers.set("content-type", "application/json");
   if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) headers.set("x-csrf-token", csrfToken);
@@ -386,6 +450,21 @@ export const api = {
     method: "DELETE",
     body: JSON.stringify({ confirm: true })
   }),
+  seasons: () => request<SeasonsState>("/api/seasons"),
+  createSeason: (input: { label: string; startsOn: string; endsOn: string }) =>
+    request<Season>("/api/seasons", { method: "POST", body: JSON.stringify(input) }),
+  updateSeason: (seasonId: string, input: { label: string; startsOn: string; endsOn: string }) =>
+    request<Season>(`/api/seasons/${seasonId}`, { method: "PUT", body: JSON.stringify(input) }),
+  deleteSeason: (seasonId: string) =>
+    request<{ deleted: true }>(`/api/seasons/${seasonId}`, { method: "DELETE" }),
+  seasonFields: (seasonId: string) => request<SeasonFieldCheck>(`/api/seasons/${seasonId}/fields`),
+  mapSeasonField: (seasonId: string, input: { formSlug: string; sourceFieldId: string; fieldKey: string }) =>
+    request<SeasonFieldCheck>(`/api/seasons/${seasonId}/field-mapping`, { method: "PUT", body: JSON.stringify(input) }),
+  setCertificateDate: (memberId: string, fieldKey: string, certificateDate: string | null) =>
+    request<{ certificateDate: string | null }>(
+      `/api/members/${memberId}/documents/${encodeURIComponent(fieldKey)}/certificate-date`,
+      { method: "PUT", body: JSON.stringify({ certificateDate }) }
+    ),
   setup: () => request<SetupData>("/api/setup"),
   discoverCampaigns: () =>
     request<SetupData>("/api/helloasso/discover-campaigns", { method: "POST" }),
