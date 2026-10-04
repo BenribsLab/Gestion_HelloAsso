@@ -763,7 +763,8 @@ export async function importMembers(
               if (url) documentAnswers.push({ fieldKey: retained.key, url });
               continue;
             }
-            profileData[retained.key] = answer.answer;
+            // Question Oui / Non : HelloAsso répond « Oui » / « Non » en texte ; on garde un vrai/faux.
+            profileData[retained.key] = /yesno|oui\s*\/\s*non|boolean/i.test(retained.type) ? yesNoValue(answer.answer) : answer.answer;
             if (/e-?mail|courriel/.test(normalizedLabel)) email = answerToString(answer.answer);
             if (answer.type === "Phone" && /telephone 1/.test(normalizedLabel)) {
               phone = answerToString(answer.answer);
@@ -972,6 +973,15 @@ function normalizeLabel(value: string) {
 function isHealthDocumentLabel(value: string) {
   const label = normalizeLabel(value);
   return /certificat|attestation|questionnaire.*sante/.test(label);
+}
+
+/** Réponse Oui / Non de HelloAsso (« Oui », « Non », true, "true"…) en vrai / faux ; null si vide. */
+export function yesNoValue(answer: unknown): boolean | null {
+  if (typeof answer === "boolean") return answer;
+  const text = String(answer ?? "").normalize("NFD").replace(/\p{Diacritic}/gu, "").trim().toLowerCase();
+  if (/^(oui|yes|true|vrai|1|o|y)$/.test(text)) return true;
+  if (/^(non|no|false|faux|0|n)$/.test(text)) return false;
+  return null;
 }
 
 function answerToString(answer: unknown) {

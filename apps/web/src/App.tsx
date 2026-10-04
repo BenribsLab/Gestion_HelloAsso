@@ -1660,6 +1660,13 @@ function memberChanges(member: Member, draft: MemberDraft) {
 
 function customFieldInputValue(field: { type: string; value?: unknown }) {
   if (field.value === null || field.value === undefined) return "";
+  const type = field.type.toLocaleLowerCase("fr");
+  // Oui / Non : valeurs importées avant la correction en texte (« Oui », « Non »).
+  if ((type.includes("yesno") || type.includes("oui/non") || type.includes("boolean")) && typeof field.value === "string") {
+    const text = field.value.normalize("NFD").replace(/\p{Diacritic}/gu, "").trim().toLowerCase();
+    if (/^(oui|yes|true|vrai|1)$/.test(text)) return "true";
+    if (/^(non|no|false|faux|0)$/.test(text)) return "false";
+  }
   if (field.type.toLocaleLowerCase("fr") === "date" && typeof field.value === "string") {
     const frenchDate = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(field.value);
     if (frenchDate) return `${frenchDate[3]}-${frenchDate[2]}-${frenchDate[1]}`;
