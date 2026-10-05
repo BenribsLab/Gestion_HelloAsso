@@ -104,6 +104,14 @@ function buildHost(options: LoadOptions, manifest: ExtensionManifest): Extension
     ...(capabilities.has("helloasso-documents")
       ? { getHelloAssoDocument: options.helloasso.getDocument }
       : {}),
+    ...(capabilities.has("helloasso-read")
+      ? {
+          helloassoRead: {
+            get: (path: string) => options.helloasso.readOrganization(path),
+            getAllPages: (path: string) => options.helloasso.readOrganizationPages(path)
+          }
+        }
+      : {}),
     ...(capabilities.has("remote-browser-relay")
       ? {
           remoteBrowserRelay: {

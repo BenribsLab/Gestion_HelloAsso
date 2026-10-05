@@ -272,8 +272,27 @@ export function createHelloAssoClient(source: HelloAssoConfigSource) {
     throw new HelloAssoError("Trop de redirections pour ce document HelloAsso.", 502);
   }
 
+  /**
+   * Lecture générique (GET) sous l'association configurée, pour les extensions déclarant la
+   * capacité « helloasso-read ». `path` est relatif à /organizations/{association}.
+   */
+  function organizationPath(path: string, slug: string) {
+    if (!/^\/[A-Za-z0-9/_.\-?=&%,]*$/.test(path) || path.includes("..")) {
+      throw new HelloAssoError("Chemin de lecture HelloAsso invalide.", 400);
+    }
+    return `/organizations/${encodeURIComponent(slug)}${path}`;
+  }
+
   return {
     configuration,
+    async readOrganization(path: string) {
+      const current = await configuration();
+      return getJson(organizationPath(path, current.organizationSlug));
+    },
+    async readOrganizationPages(path: string) {
+      const current = await configuration();
+      return getAllPages(organizationPath(path, current.organizationSlug));
+    },
     async checkConnection() {
       const current = await configuration();
       const token = await getAccessToken(current);

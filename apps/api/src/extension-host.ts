@@ -88,6 +88,7 @@ export const grantableCapabilities = [
   "smtp",
   "dynamic-groups",
   "helloasso-documents",
+  "helloasso-read",
   "remote-browser-relay"
 ] as const;
 export type GrantableCapability = (typeof grantableCapabilities)[number];
@@ -126,6 +127,15 @@ export interface ExtensionHostCore {
    */
   signCentralState?(payload: string): string;
   safeDownloadName(value: string): string;
+  /**
+   * Lecture seule de l'API HelloAsso de l'association du club (capacité « helloasso-read ») :
+   * `path` est relatif à /v5/organizations/{association}, par exemple « /forms?formTypes=Shop ».
+   */
+  helloassoRead?: {
+    get(path: string): Promise<unknown>;
+    /** Toutes les pages d'une liste paginée (champ `data`). */
+    getAllPages(path: string): Promise<unknown[]>;
+  };
   /** Téléchargement strictement en lecture seule, avec validation d'URL par le client HelloAsso. */
   getHelloAssoDocument?(url: string): Promise<{
     content: Buffer;
