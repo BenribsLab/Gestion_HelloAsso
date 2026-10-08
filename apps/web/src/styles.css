@@ -320,7 +320,10 @@ th { color: var(--ink-500); font-family: var(--font-mono); font-size: 11px; font
 .data-table .member-name-cell { overflow-wrap: normal; }
 .data-table tbody tr { transition: background 0.12s; }
 .data-table tbody tr:hover { background: #f8faf4; }
-.data-table .member-contact-cell { color: var(--ink-500); }
+.data-table col.member-phone-column { width: 150px; }
+.data-table .member-phone-cell { overflow-wrap: normal; white-space: nowrap; color: var(--ink-500); }
+.data-table .member-phone-cell a { color: var(--ink-700); font-variant-numeric: tabular-nums; text-decoration: none; }
+.data-table .member-phone-cell a:hover { text-decoration: underline; }
 .clickable-row { cursor: pointer; }
 .row-action { text-align: right; }
 .row-chevron { display: inline-grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; color: var(--ink-400); font-size: 20px; line-height: 1; transition: background 0.16s, color 0.16s, transform 0.16s var(--ease-out); }
@@ -628,8 +631,6 @@ th { color: var(--ink-500); font-family: var(--font-mono); font-size: 11px; font
   .account-identity .secondary { grid-column: 1 / -1; }
 }
 @media (max-width: 640px) {
-  /* Liste des adhérents : pas de colonne Contact sur téléphone (l'e-mail reste dans la fiche). */
-  .mobile-hidden { display: none; }
   .initials { width: 34px; height: 34px; font-size: 12px; }
   dialog.gu-dialog, dialog.gu-dialog.gu-dialog-large, dialog.gu-dialog.gu-dialog-wide, dialog.gu-drawer {
     width: 100vw; height: auto; max-height: calc(100vh - 16px); margin: auto 0 0; border-width: 1px 0 0; border-radius: 20px 20px 0 0;
