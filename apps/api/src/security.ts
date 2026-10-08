@@ -20,6 +20,10 @@ const newUserSchema = z.object({
   password: z.string().min(14).max(256)
 });
 const userIdSchema = z.object({ userId: z.uuid() });
+// Raccourcis de la barre du bas (mobile) : identifiants de vues, au plus 4.
+const preferencesSchema = z.object({
+  mobileShortcuts: z.array(z.string().regex(/^(?:[a-z]+|ext:[a-z0-9-]{1,80})$/)).max(4)
+});
 
 export type AuthUser = {
   id: string | null;
@@ -242,6 +246,28 @@ export async function installSecurity(server: FastifyInstance, database: Databas
       client.release();
     }
     return { changed: true };
+  });
+
+  server.get("/api/auth/preferences", async (request) => {
+    if (!request.authUser?.id) return { mobileShortcuts: null };
+    const result = await database.query<{ preferences: { mobileShortcuts?: unknown } }>(
+      "SELECT preferences FROM app_users WHERE id = $1",
+      [request.authUser.id]
+    );
+    const shortcuts = result.rows[0]?.preferences.mobileShortcuts;
+    return { mobileShortcuts: Array.isArray(shortcuts) ? shortcuts : null };
+  });
+
+  server.put("/api/auth/preferences", {
+    config: { rateLimit: { max: 60, timeWindow: "1 hour" } }
+  }, async (request, reply) => {
+    if (!request.authUser?.id) return reply.code(409).send({ message: "Authentification désactivée en mode local." });
+    const input = preferencesSchema.parse(request.body);
+    await database.query(
+      "UPDATE app_users SET preferences = preferences || $2::jsonb, updated_at = now() WHERE id = $1",
+      [request.authUser.id, JSON.stringify({ mobileShortcuts: input.mobileShortcuts })]
+    );
+    return { mobileShortcuts: input.mobileShortcuts };
   });
 
   server.get("/api/auth/users", async () => {

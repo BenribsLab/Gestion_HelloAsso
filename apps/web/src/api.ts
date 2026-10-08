@@ -363,6 +363,9 @@ export const api = {
     request<{ id: string }>("/api/auth/users", { method: "POST", body: JSON.stringify(input) }),
   disableUser: (userId: string) =>
     request<{ id: string; disabled: true }>(`/api/auth/users/${userId}`, { method: "DELETE" }),
+  preferences: () => request<{ mobileShortcuts: string[] | null }>("/api/auth/preferences"),
+  savePreferences: (input: { mobileShortcuts: string[] }) =>
+    request<{ mobileShortcuts: string[] }>("/api/auth/preferences", { method: "PUT", body: JSON.stringify(input) }),
   dashboard: () => request<DashboardData>("/api/dashboard"),
   extensions: () => request<{ items: Extension[]; configuration: ExtensionConfiguration }>("/api/extensions"),
   setExtensionEnabled: (extensionId: string, enabled: boolean) =>

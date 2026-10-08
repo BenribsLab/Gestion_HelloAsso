@@ -48,6 +48,10 @@ export function App() {
   const [authEnabled, setAuthEnabled] = useState(true);
   const [accountOpen, setAccountOpen] = useState(false);
   const [seasons, setSeasons] = useState<SeasonsState | null>(null);
+  // Menu mobile : panneau latéral et raccourcis de la barre du bas (choisis par chaque compte).
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [shortcuts, setShortcuts] = useState<string[] | null>(null);
 
   const loadData = useCallback(async () => {
     try {
@@ -110,6 +114,7 @@ export function App() {
         setAuthUser(session.user);
         setAuthEnabled(session.authEnabled);
         setAuthReady(true);
+        void loadShortcuts(session.user);
         await loadData();
       })
       .catch(requireAuthentication);
@@ -286,13 +291,40 @@ export function App() {
     }
   }
 
+  async function loadShortcuts(user: AuthUser) {
+    if (!user.id) {
+      setShortcuts(localShortcuts());
+      return;
+    }
+    try {
+      setShortcuts((await api.preferences()).mobileShortcuts);
+    } catch {
+      setShortcuts(null);
+    }
+  }
+
+  async function saveShortcuts(next: string[]) {
+    if (authUser?.id) await api.savePreferences({ mobileShortcuts: next });
+    else storeLocalShortcuts(next);
+    setShortcuts(next);
+  }
+
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setMenuOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [menuOpen]);
+
   function navigate(nextView: View) {
+    setMenuOpen(false);
     setSelectedGroupId(null);
     setExtensionPayload(null);
     setView(nextView);
   }
 
   function openExtensionAction(extensionId: string, payload: unknown) {
+    setMenuOpen(false);
     setExtensionPayload({ extensionId, payload });
     setSelectedGroupId(null);
     setView(`ext:${extensionId}`);
@@ -304,6 +336,7 @@ export function App() {
     setAuthEnabled(true);
     setAuthReady(true);
     setLoading(true);
+    void loadShortcuts(result.user);
     await loadData();
   }
 
@@ -324,9 +357,15 @@ export function App() {
   if (!authReady) return <div className="app-loading-screen"><span className="brand-mark">g</span><p>Ouverture sécurisée…</p></div>;
   if (!authUser) return <LoginScreen onLogin={login} />;
 
+  const navEntries = navigationEntries(uiContracts.listViews(extensionEnabled));
+  const available = new Set<string>(navEntries.map((entry) => entry.view));
+  const tabbar = (shortcuts ?? defaultShortcuts(navEntries)).filter((item) => available.has(item)).slice(0, maxShortcuts)
+    .map((item) => navEntries.find((entry) => entry.view === item)!);
+
   return (
     <div className="app-shell">
-      <aside className="sidebar">
+      {menuOpen && <div className="nav-backdrop" aria-hidden="true" onClick={() => setMenuOpen(false)} />}
+      <aside className={menuOpen ? "sidebar open" : "sidebar"} id="main-menu">
         <div className="brand">
           <span className="brand-mark">g</span>
           <div>
@@ -372,13 +411,23 @@ export function App() {
               Extensions
             </NavButton>
           </div>
+          <div className="nav-group mobile-only">
+            <p className="nav-label">Téléphone</p>
+            <NavButton icon="menu" active={false} onClick={() => { setMenuOpen(false); setShortcutsOpen(true); }}>
+              Personnaliser la barre du bas
+            </NavButton>
+          </div>
         </nav>
         <div className="local-badge"><span /> {authEnabled ? "Accès protégé" : "Mode local"}</div>
       </aside>
 
       <main>
         <header className="topbar">
-          <div>
+          <div className="topbar-main">
+            <button className="menu-button" type="button" aria-label="Ouvrir le menu" aria-controls="main-menu" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}>
+              <NavIcon name="menu" size={22} />
+            </button>
+            <div>
             {seasons && seasons.items.length > 0 ? <label className="season-picker eyebrow">
               <span className="sr-only">Saison ouverte</span>
               <select value={seasons.selectedId} onChange={(event) => openSeason(event.target.value)} aria-label="Saison ouverte">
@@ -386,6 +435,7 @@ export function App() {
               </select>
             </label> : <p className="eyebrow">Saison</p>}
             <h1>{viewTitle(view)}</h1>
+            </div>
           </div>
           {authEnabled ? <button className="initials account-button" type="button" aria-label="Ouvrir mon compte" title={authUser.email} onClick={() => setAccountOpen(true)}>{userInitials(authUser)}</button> : <div className="initials" aria-label="Compte administrateur local">AD</div>}
         </header>
@@ -484,7 +534,18 @@ export function App() {
           </>
         )}
         {accountOpen && <Modal title="Mon compte" eyebrow="Sécurité" size="large" onClose={() => setAccountOpen(false)}><AccountPanel user={authUser} onLogout={() => void logout()} /></Modal>}
+        {shortcutsOpen && <Modal title="Barre du bas" eyebrow="Personnaliser" onClose={() => setShortcutsOpen(false)}>
+          <ShortcutsEditor entries={navEntries} initial={tabbar.map((entry) => entry.view)} onCancel={() => setShortcutsOpen(false)} onSave={async (next) => { await saveShortcuts(next); setShortcutsOpen(false); }} />
+        </Modal>}
       </main>
+      <nav className="mobile-tabbar" aria-label="Raccourcis">
+        {tabbar.map((entry) => <button key={entry.view} type="button" className={view === entry.view ? "active" : ""} aria-current={view === entry.view ? "page" : undefined} onClick={() => navigate(entry.view)}>
+          <NavIcon name={entry.icon} size={21} /><span>{entry.label}</span>
+        </button>)}
+        <button type="button" className={menuOpen ? "active" : ""} aria-controls="main-menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>
+          <NavIcon name="menu" size={21} /><span>Menu</span>
+        </button>
+      </nav>
     </div>
   );
 }
@@ -502,6 +563,105 @@ function SeasonBanner({ state }: { state: SeasonsState }) {
     </div>;
   }
   return <div className="alert season-banner info" role="status">Vous préparez la saison {season.label}, qui n'a pas encore commencé. {back}</div>;
+}
+
+type NavEntry = { view: View; icon: string; label: string };
+const maxShortcuts = 4;
+const localShortcutsKey = "gu-mobile-shortcuts";
+
+/** Toutes les entrées du menu, dans l'ordre de la barre latérale. */
+function navigationEntries(views: { extensionId: string; label: string }[]): NavEntry[] {
+  return [
+    { view: "dashboard", icon: "dashboard", label: "Vue d'ensemble" },
+    { view: "members", icon: "members", label: "Adhérents" },
+    { view: "groups", icon: "groups", label: "Groupes" },
+    ...views.map((registration): NavEntry => ({ view: `ext:${registration.extensionId}`, icon: registration.extensionId, label: registration.label })),
+    { view: "seasons", icon: "seasons", label: "Saisons" },
+    { view: "setup", icon: "setup", label: "Configuration" },
+    { view: "extensions", icon: "extensions", label: "Extensions" }
+  ];
+}
+
+/** Barre proposée tant que l'utilisateur ne l'a pas personnalisée. */
+function defaultShortcuts(entries: NavEntry[]): string[] {
+  const firstModule = entries.find((entry) => entry.view.startsWith("ext:"));
+  return ["dashboard", "members", "groups", ...(firstModule ? [firstModule.view] : [])];
+}
+
+// Mode local (sans comptes) : le choix reste sur cet appareil.
+function localShortcuts(): string[] | null {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(localShortcutsKey) ?? "null") as unknown;
+    return Array.isArray(stored) ? stored.filter((value): value is string => typeof value === "string") : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeLocalShortcuts(shortcuts: string[]) {
+  try { window.localStorage.setItem(localShortcutsKey, JSON.stringify(shortcuts)); } catch { /* stockage indisponible */ }
+}
+
+function ShortcutsEditor({ entries, initial, onSave, onCancel }: {
+  entries: NavEntry[];
+  initial: string[];
+  onSave: (shortcuts: string[]) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [selection, setSelection] = useState<string[]>(initial);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const label = (item: string) => entries.find((entry) => entry.view === item)?.label ?? item;
+
+  function toggle(item: string) {
+    setSelection((current) => current.includes(item) ? current.filter((value) => value !== item) : current.length < maxShortcuts ? [...current, item] : current);
+  }
+
+  function move(index: number, offset: number) {
+    setSelection((current) => {
+      const next = [...current];
+      const target = index + offset;
+      if (target < 0 || target >= next.length) return current;
+      [next[index], next[target]] = [next[target]!, next[index]!];
+      return next;
+    });
+  }
+
+  async function save() {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(selection);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Impossible d'enregistrer la barre du bas.");
+      setSaving(false);
+    }
+  }
+
+  return <div className="shortcuts-editor">
+    <p className="muted">Choisissez jusqu'à {maxShortcuts} raccourcis. Le bouton « Menu » reste toujours en dernier.</p>
+    {error && <div className="alert error">{error}</div>}
+    {selection.length > 0 && <ol className="shortcuts-order">
+      {selection.map((item, index) => <li key={item}>
+        <span>{label(item)}</span>
+        <button type="button" className="secondary compact-button" aria-label={`Monter ${label(item)}`} disabled={index === 0} onClick={() => move(index, -1)}>↑</button>
+        <button type="button" className="secondary compact-button" aria-label={`Descendre ${label(item)}`} disabled={index === selection.length - 1} onClick={() => move(index, 1)}>↓</button>
+      </li>)}
+    </ol>}
+    <div className="shortcuts-choices">
+      {entries.map((entry) => {
+        const checked = selection.includes(entry.view);
+        return <label key={entry.view} className="check-line">
+          <input type="checkbox" checked={checked} disabled={!checked && selection.length >= maxShortcuts} onChange={() => toggle(entry.view)} />
+          <NavIcon name={entry.icon} size={18} /> {entry.label}
+        </label>;
+      })}
+    </div>
+    <div className="gu-dialog-actions">
+      <button type="button" className="secondary" onClick={onCancel}>Annuler</button>
+      <button type="button" className="primary" disabled={saving} onClick={() => void save()}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+    </div>
+  </div>;
 }
 
 function NavButton({
