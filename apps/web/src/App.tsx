@@ -1439,17 +1439,17 @@ function Members({
             <colgroup>
               <col className="member-name-column" />
               {categoriesEnabled && <col className="member-category-column" />}
-              <col className="member-contact-column member-contact" />
+              <col className="member-contact-column mobile-hidden" />
               {memberColumns.map((column) => <col className="member-extension-column" key={column.key} style={{ width: column.width ?? "140px" }} />)}
               <col className="member-groups-column" />
               <col className="member-action-column" />
             </colgroup>
             <thead>
-              <tr><th>Nom</th>{categoriesEnabled && <th>Catégorie FFE</th>}<th className="member-contact">Contact</th>{memberColumns.map((column) => <th key={column.key}>{column.label}</th>)}<th>Groupes</th><th /></tr>
+              <tr><th>Nom</th>{categoriesEnabled && <th>Catégorie FFE</th>}<th className="mobile-hidden">Contact</th>{memberColumns.map((column) => <th key={column.key}>{column.label}</th>)}<th>Groupes</th><th /></tr>
               <tr className="filter-row">
                 <th><FilterInput label="Filtrer par nom" value={filters.name} onChange={(name) => setFilters((current) => ({ ...current, name }))} /></th>
                 {categoriesEnabled && <th><ChoiceFilter label="Catégorie" options={filterOptions.category} selection={filters.category} onToggle={(value) => setFilters((current) => ({ ...current, category: toggledSet(current.category, value) }))} onClear={() => setFilters((current) => ({ ...current, category: new Set() }))} /></th>}
-                <th className="member-contact" />
+                <th className="mobile-hidden" />
                 {memberColumns.map((column) => <th key={column.key}><ChoiceFilter label={column.label} options={filterOptions.extensions[column.key] ?? []} selection={filters.extensions[column.key] ?? new Set()} onToggle={(value) => setFilters((current) => ({ ...current, extensions: { ...current.extensions, [column.key]: toggledSet(current.extensions[column.key] ?? new Set(), value) } }))} onClear={() => setFilters((current) => ({ ...current, extensions: { ...current.extensions, [column.key]: new Set() } }))} /></th>)}
                 <th><ChoiceFilter label="Groupes" options={filterOptions.groups} selection={filters.groups} onToggle={(value) => setFilters((current) => ({ ...current, groups: toggledSet(current.groups, value) }))} onClear={() => setFilters((current) => ({ ...current, groups: new Set() }))} /></th>
                 <th />
@@ -1461,7 +1461,7 @@ function Members({
               }}>
                 <td className="member-name-cell"><button className="member-name-button" type="button" onClick={() => edit(member)}><strong>{member.lastName} {member.firstName}</strong></button></td>
                 {categoriesEnabled && <td><CategoryBadge member={member} /></td>}
-                <td className="member-contact-cell member-contact">{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "—")}</td>
+                <td className="member-contact-cell mobile-hidden">{member.email ?? (member.phone ? formatPhoneNumber(member.phone) : "—")}</td>
                 {memberColumns.map((column) => <td key={column.key}><ExtensionMemberCell column={column} member={member} /></td>)}
                 <td><GroupBadges groups={member.groups} /></td>
                 <td className="row-action"><span className="row-chevron" aria-hidden="true">›</span></td>
