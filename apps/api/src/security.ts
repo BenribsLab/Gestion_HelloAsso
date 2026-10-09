@@ -20,9 +20,11 @@ const newUserSchema = z.object({
   password: z.string().min(14).max(256)
 });
 const userIdSchema = z.object({ userId: z.uuid() });
-// Raccourcis de la barre du bas (mobile) : identifiants de vues, au plus 4.
+// Raccourcis de la barre du bas (mobile) : identifiants de vues, au plus 4. Ordre des modules
+// dans le menu : identifiants d'extensions. Chaque préférence est facultative (mise à jour partielle).
 const preferencesSchema = z.object({
-  mobileShortcuts: z.array(z.string().regex(/^(?:[a-z]+|ext:[a-z0-9-]{1,80})$/)).max(4)
+  mobileShortcuts: z.array(z.string().regex(/^(?:[a-z]+|ext:[a-z0-9-]{1,80})$/)).max(4).optional(),
+  menuOrder: z.array(z.string().regex(/^[a-z0-9-]{1,80}$/)).max(200).nullable().optional()
 });
 
 export type AuthUser = {
@@ -249,13 +251,16 @@ export async function installSecurity(server: FastifyInstance, database: Databas
   });
 
   server.get("/api/auth/preferences", async (request) => {
-    if (!request.authUser?.id) return { mobileShortcuts: null };
-    const result = await database.query<{ preferences: { mobileShortcuts?: unknown } }>(
+    if (!request.authUser?.id) return { mobileShortcuts: null, menuOrder: null };
+    const result = await database.query<{ preferences: { mobileShortcuts?: unknown; menuOrder?: unknown } }>(
       "SELECT preferences FROM app_users WHERE id = $1",
       [request.authUser.id]
     );
-    const shortcuts = result.rows[0]?.preferences.mobileShortcuts;
-    return { mobileShortcuts: Array.isArray(shortcuts) ? shortcuts : null };
+    const preferences = result.rows[0]?.preferences;
+    return {
+      mobileShortcuts: Array.isArray(preferences?.mobileShortcuts) ? preferences.mobileShortcuts : null,
+      menuOrder: Array.isArray(preferences?.menuOrder) ? preferences.menuOrder : null
+    };
   });
 
   server.put("/api/auth/preferences", {
@@ -263,11 +268,12 @@ export async function installSecurity(server: FastifyInstance, database: Databas
   }, async (request, reply) => {
     if (!request.authUser?.id) return reply.code(409).send({ message: "Authentification désactivée en mode local." });
     const input = preferencesSchema.parse(request.body);
+    const changes = Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined));
     await database.query(
       "UPDATE app_users SET preferences = preferences || $2::jsonb, updated_at = now() WHERE id = $1",
-      [request.authUser.id, JSON.stringify({ mobileShortcuts: input.mobileShortcuts })]
+      [request.authUser.id, JSON.stringify(changes)]
     );
-    return { mobileShortcuts: input.mobileShortcuts };
+    return changes;
   });
 
   server.get("/api/auth/users", async () => {

@@ -52,6 +52,9 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [shortcuts, setShortcuts] = useState<string[] | null>(null);
+  // Ordre des modules dans le menu : choisi par l'utilisateur, sinon ordre d'installation.
+  const [menuOrder, setMenuOrder] = useState<string[] | null>(null);
+  const [menuOrderOpen, setMenuOrderOpen] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -294,12 +297,16 @@ export function App() {
   async function loadShortcuts(user: AuthUser) {
     if (!user.id) {
       setShortcuts(localShortcuts());
+      setMenuOrder(localMenuOrder());
       return;
     }
     try {
-      setShortcuts((await api.preferences()).mobileShortcuts);
+      const preferences = await api.preferences();
+      setShortcuts(preferences.mobileShortcuts);
+      setMenuOrder(preferences.menuOrder ?? null);
     } catch {
       setShortcuts(null);
+      setMenuOrder(null);
     }
   }
 
@@ -307,6 +314,12 @@ export function App() {
     if (authUser?.id) await api.savePreferences({ mobileShortcuts: next });
     else storeLocalShortcuts(next);
     setShortcuts(next);
+  }
+
+  async function saveMenuOrder(next: string[] | null) {
+    if (authUser?.id) await api.savePreferences({ menuOrder: next });
+    else storeLocalMenuOrder(next);
+    setMenuOrder(next);
   }
 
   useEffect(() => {
@@ -357,7 +370,8 @@ export function App() {
   if (!authReady) return <div className="app-loading-screen"><span className="brand-mark">g</span><p>Ouverture sécurisée…</p></div>;
   if (!authUser) return <LoginScreen onLogin={login} />;
 
-  const navEntries = navigationEntries(uiContracts.listViews(extensionEnabled));
+  const moduleViews = orderedViews(uiContracts.listViews(extensionEnabled), extensions, menuOrder);
+  const navEntries = navigationEntries(moduleViews);
   const available = new Set<string>(navEntries.map((entry) => entry.view));
   const tabbar = (shortcuts ?? defaultShortcuts(navEntries)).filter((item) => available.has(item)).slice(0, maxShortcuts)
     .map((item) => navEntries.find((entry) => entry.view === item)!);
@@ -386,9 +400,11 @@ export function App() {
               Groupes
             </NavButton>
           </div>
-          {uiContracts.listViews(extensionEnabled).length > 0 && <div className="nav-group">
-            <p className="nav-label">Modules</p>
-            {uiContracts.listViews(extensionEnabled).map((registration) => (
+          {moduleViews.length > 0 && <div className="nav-group">
+            <p className="nav-label nav-label-row">Modules
+              {moduleViews.length > 1 && <button className="nav-label-action" type="button" title="Choisir l'ordre des modules" onClick={() => { setMenuOpen(false); setMenuOrderOpen(true); }}>Ordonner</button>}
+            </p>
+            {moduleViews.map((registration) => (
               <NavButton
                 key={registration.extensionId}
                 icon={registration.extensionId}
@@ -534,6 +550,14 @@ export function App() {
           </>
         )}
         {accountOpen && <Modal title="Mon compte" eyebrow="Sécurité" size="large" onClose={() => setAccountOpen(false)}><AccountPanel user={authUser} onLogout={() => void logout()} /></Modal>}
+        {menuOrderOpen && <Modal title="Ordre des modules" eyebrow="Menu" onClose={() => setMenuOrderOpen(false)}>
+          <MenuOrderEditor
+            entries={moduleViews.map((registration) => ({ id: registration.extensionId, label: registration.label }))}
+            custom={menuOrder !== null}
+            onCancel={() => setMenuOrderOpen(false)}
+            onSave={async (next) => { await saveMenuOrder(next); setMenuOrderOpen(false); }}
+          />
+        </Modal>}
         {shortcutsOpen && <Modal title="Barre du bas" eyebrow="Personnaliser" onClose={() => setShortcutsOpen(false)}>
           <ShortcutsEditor entries={navEntries} initial={tabbar.map((entry) => entry.view)} onCancel={() => setShortcutsOpen(false)} onSave={async (next) => { await saveShortcuts(next); setShortcutsOpen(false); }} />
         </Modal>}
@@ -586,6 +610,89 @@ function navigationEntries(views: { extensionId: string; label: string }[]): Nav
 function defaultShortcuts(entries: NavEntry[]): string[] {
   const firstModule = entries.find((entry) => entry.view.startsWith("ext:"));
   return ["dashboard", "members", "groups", ...(firstModule ? [firstModule.view] : [])];
+}
+
+const localMenuOrderKey = "gu-menu-order";
+
+/**
+ * Modules dans l'ordre choisi par l'utilisateur ; les autres (nouveaux, ou sans ordre choisi)
+ * suivent dans l'ordre d'installation : le premier installé en haut. Sans tri, l'ordre suivrait
+ * le chargement des modules, qui change d'une fois à l'autre.
+ */
+function orderedViews<T extends { extensionId: string; label: string }>(views: T[], extensions: Extension[], order: string[] | null) {
+  const installed = new Map(extensions.map((extension) => [extension.id, extension.installedAt]));
+  const byInstallation = [...views].sort((left, right) =>
+    (installed.get(left.extensionId) ?? "").localeCompare(installed.get(right.extensionId) ?? "") || left.label.localeCompare(right.label, "fr"));
+  if (!order) return byInstallation;
+  const position = new Map(order.map((id, index) => [id, index]));
+  return [...byInstallation].sort((left, right) =>
+    (position.get(left.extensionId) ?? Number.MAX_SAFE_INTEGER) - (position.get(right.extensionId) ?? Number.MAX_SAFE_INTEGER));
+}
+
+function localMenuOrder(): string[] | null {
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(localMenuOrderKey) ?? "null") as unknown;
+    return Array.isArray(stored) ? stored.filter((value): value is string => typeof value === "string") : null;
+  } catch {
+    return null;
+  }
+}
+
+function storeLocalMenuOrder(order: string[] | null) {
+  try {
+    if (order) window.localStorage.setItem(localMenuOrderKey, JSON.stringify(order));
+    else window.localStorage.removeItem(localMenuOrderKey);
+  } catch { /* stockage indisponible */ }
+}
+
+function MenuOrderEditor({ entries, custom, onSave, onCancel }: {
+  entries: Array<{ id: string; label: string }>;
+  custom: boolean;
+  onSave: (order: string[] | null) => Promise<void>;
+  onCancel: () => void;
+}) {
+  const [order, setOrder] = useState(entries);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  function move(index: number, offset: number) {
+    setOrder((current) => {
+      const next = [...current];
+      const target = index + offset;
+      if (target < 0 || target >= next.length) return current;
+      [next[index], next[target]] = [next[target]!, next[index]!];
+      return next;
+    });
+  }
+
+  async function save(value: string[] | null) {
+    setSaving(true);
+    setError(null);
+    try {
+      await onSave(value);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Impossible d'enregistrer l'ordre des modules.");
+      setSaving(false);
+    }
+  }
+
+  return <div className="shortcuts-editor">
+    <p className="muted">Rangez les modules du menu avec les flèches. Par défaut, ils suivent l'ordre d'installation : le premier installé en haut.</p>
+    {error && <div className="alert error">{error}</div>}
+    <ol className="shortcuts-order">
+      {order.map((entry, index) => <li key={entry.id}>
+        <NavIcon name={entry.id} size={18} />
+        <span>{entry.label}</span>
+        <button type="button" className="secondary compact-button" aria-label={`Monter ${entry.label}`} disabled={index === 0} onClick={() => move(index, -1)}>↑</button>
+        <button type="button" className="secondary compact-button" aria-label={`Descendre ${entry.label}`} disabled={index === order.length - 1} onClick={() => move(index, 1)}>↓</button>
+      </li>)}
+    </ol>
+    <div className="gu-dialog-actions">
+      {custom && <button type="button" className="link-button" disabled={saving} onClick={() => void save(null)}>Revenir à l'ordre d'installation</button>}
+      <button type="button" className="secondary" onClick={onCancel}>Annuler</button>
+      <button type="button" className="primary" disabled={saving} onClick={() => void save(order.map((entry) => entry.id))}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+    </div>
+  </div>;
 }
 
 // Mode local (sans comptes) : le choix reste sur cet appareil.
