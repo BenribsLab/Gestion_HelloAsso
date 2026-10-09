@@ -22,6 +22,7 @@
 
   function open(config) {
     var picker = window.google.picker;
+    if (config.kind === "spreadsheet") return openSpreadsheet(picker, config);
     var folders = new picker.DocsView(picker.ViewId.FOLDERS)
       .setIncludeFolders(true)
       .setSelectFolderEnabled(true)
@@ -48,6 +49,36 @@
           reply({ folderId: documents[0] ? documents[0][picker.Document.ID] : null });
         } else if (action === picker.Action.CANCEL) {
           reply({ folderId: null });
+        }
+      })
+      .build()
+      .setVisible(true);
+  }
+
+  /** Variante « tableur » : choix d'un classeur Google Sheets (renvoyé dans `folderId` aussi). */
+  function openSpreadsheet(picker, config) {
+    var mine = new picker.DocsView(picker.ViewId.SPREADSHEETS).setMimeTypes("application/vnd.google-apps.spreadsheet");
+    var sharedDrives = new picker.DocsView(picker.ViewId.SPREADSHEETS)
+      .setEnableDrives(true)
+      .setMimeTypes("application/vnd.google-apps.spreadsheet");
+    new picker.PickerBuilder()
+      .addView(mine)
+      .addView(sharedDrives)
+      .enableFeature(picker.Feature.SUPPORT_DRIVES)
+      .setOAuthToken(config.accessToken)
+      .setDeveloperKey(config.apiKey)
+      .setAppId(config.appId)
+      .setOrigin(origin)
+      .setLocale("fr")
+      .setTitle(config.title || "Choisir un tableau")
+      .setCallback(function (data) {
+        var action = data[picker.Response.ACTION];
+        if (action === picker.Action.PICKED) {
+          var documents = data[picker.Response.DOCUMENTS] || [];
+          var id = documents[0] ? documents[0][picker.Document.ID] : null;
+          reply({ folderId: id, fileId: id });
+        } else if (action === picker.Action.CANCEL) {
+          reply({ folderId: null, fileId: null });
         }
       })
       .build()
