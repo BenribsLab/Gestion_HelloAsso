@@ -408,6 +408,8 @@ export const api = {
     request<Group>("/api/groups", { method: "POST", body: JSON.stringify(input) }),
   addGroupMembers: (groupId: string, memberIds: string[]) =>
     request<{ groupId: string; added: number }>(`/api/groups/${groupId}/members`, { method: "POST", body: JSON.stringify({ memberIds }) }),
+  updateGroup: (groupId: string, input: { name: string; description: string }) =>
+    request<{ groupId: string; name: string; description: string | null }>(`/api/groups/${groupId}`, { method: "PUT", body: JSON.stringify(input) }),
   deleteGroup: (groupId: string) =>
     request<{ groupId: string; deleted: true }>(`/api/groups/${groupId}`, { method: "DELETE" }),
   setMemberGroups: (memberId: string, groupIds: string[]) =>

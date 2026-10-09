@@ -723,6 +723,25 @@ server.post("/api/groups/:groupId/members", async (request, reply) => {
   }
 });
 
+// Renommer un groupe (et changer sa description). Un groupe HelloAsso garde le nom défini dans
+// la configuration HelloAsso : le prochain import le retrouve par ce nom.
+server.put("/api/groups/:groupId", async (request, reply) => {
+  const { groupId } = groupIdSchema.parse(request.params);
+  const input = groupInputSchema.pick({ name: true, description: true }).parse(request.body);
+  const current = await database.query<{ source: string }>("SELECT source FROM groups WHERE id = $1", [groupId]);
+  if (!current.rows[0]) return reply.code(404).send({ message: "Ce groupe n'existe pas." });
+  if (current.rows[0].source === "helloasso") {
+    return reply.code(409).send({ message: "Ce groupe provient de la configuration HelloAsso : son nom se change dans celle-ci." });
+  }
+  const duplicate = await database.query("SELECT 1 FROM groups WHERE lower(name) = lower($1) AND id <> $2", [input.name, groupId]);
+  if (duplicate.rowCount) return reply.code(409).send({ message: "Un autre groupe porte déjà ce nom." });
+  await database.query(
+    "UPDATE groups SET name = $2, description = NULLIF($3, '') WHERE id = $1",
+    [groupId, input.name, input.description]
+  );
+  return { groupId, name: input.name, description: input.description || null };
+});
+
 server.delete("/api/groups/:groupId", async (request, reply) => {
   const { groupId } = groupIdSchema.parse(request.params);
   const groupResult = await database.query<{ name: string; source: string }>(

@@ -184,6 +184,17 @@ export function App() {
     }
   }
 
+  async function renameGroup(group: Group, name: string, description: string) {
+    setError(null);
+    try {
+      await api.updateGroup(group.id, { name, description });
+      await loadData();
+    } catch (renameError) {
+      setError(renameError instanceof Error ? renameError.message : "Impossible de renommer ce groupe.");
+      throw renameError;
+    }
+  }
+
   async function updateMemberGroups(memberId: string, groupIds: string[]) {
     setSavingMemberId(memberId);
     setError(null);
@@ -471,6 +482,7 @@ export function App() {
               />
             )}
             {view === "members" && <Members
+              onSetGroups={updateMemberGroups}
               members={members}
               fields={memberFields}
               moduleFields={moduleFields}
@@ -519,6 +531,7 @@ export function App() {
                 onCriterionValueToggle={(value) => setGroupCriterionValues((current) => toggledSet(current, value))}
                 onSubmit={createGroup}
                 onDeleteGroup={(group) => void deleteGroup(group)}
+                onRenameGroup={renameGroup}
                 onSelectGroup={setSelectedGroupId}
                 onMoveMember={updateMemberGroups}
                 onDeleteMember={deleteMember}
@@ -1333,6 +1346,7 @@ function Extensions({ items, configuration, onChanged }: {
 }
 
 function Members({
+  onSetGroups,
   members,
   fields,
   moduleFields,
@@ -1377,7 +1391,9 @@ function Members({
   memberColumns: RegisteredMemberColumn[];
   documentPanels: RegisteredDocumentPanel[];
   memberDetailPanels: RegisteredMemberDetailPanel[];
+  onSetGroups: (memberId: string, groupIds: string[]) => Promise<void>;
 }) {
+  const [groupsFor, setGroupsFor] = useState<Member | null>(null);
   const [editingMemberId, setEditingMemberId] = useState<string | null>(null);
   const [creatingMember, setCreatingMember] = useState(false);
   const [managingFields, setManagingFields] = useState(false);
@@ -1570,7 +1586,7 @@ function Members({
                 {categoriesEnabled && <td><CategoryBadge member={member} /></td>}
                 <td className="member-phone-cell">{member.phone ? <a href={`tel:${member.phone.replace(/[^+\d]/g, "")}`}>{formatPhoneNumber(member.phone)}</a> : "—"}</td>
                 {memberColumns.map((column) => <td key={column.key}><ExtensionMemberCell column={column} member={member} /></td>)}
-                <td><GroupBadges groups={member.groups} /></td>
+                <td><button className="group-cell-button" type="button" title="Choisir les groupes" onClick={() => setGroupsFor(member)}><GroupBadges groups={member.groups} /><span className="group-cell-edit" aria-hidden="true">✎</span></button></td>
                 <td className="row-action"><span className="row-chevron" aria-hidden="true">›</span></td>
               </tr>)}
             </tbody>
@@ -1626,6 +1642,7 @@ function Members({
           </form>
         </div>
       </Modal>}
+      {groupsFor && <MemberGroupsDialog member={groupsFor} groups={groups} onClose={() => setGroupsFor(null)} onSave={(groupIds) => onSetGroups(groupsFor.id, groupIds)} />}
       {editingMember && draft && <Modal
         title={`${editingMember.firstName} ${editingMember.lastName}`}
         eyebrow="Fiche adhérent"
@@ -1980,6 +1997,7 @@ function Groups({
   onCriterionValueToggle,
   onSubmit,
   onDeleteGroup,
+  onRenameGroup,
   onSelectGroup,
   onMoveMember,
   onDeleteMember,
@@ -2011,6 +2029,7 @@ function Groups({
   onCriterionValueToggle: (value: string) => void;
   onSubmit: (event: FormEvent) => Promise<boolean>;
   onDeleteGroup: (group: Group) => void;
+  onRenameGroup: (group: Group, name: string, description: string) => Promise<void>;
   onSelectGroup: (groupId: string) => void;
   onMoveMember: (memberId: string, groupIds: string[]) => Promise<void>;
   onDeleteMember: (member: Member) => Promise<boolean>;
@@ -2212,6 +2231,7 @@ function Groups({
           {groupPanels.map((panel) => (
             <ExtensionView key={panel.extensionId} element={panel.element} onChanged={onDocumentsChanged} payload={selectedGroup} />
           ))}
+          <GroupNameEditor key={selectedGroup.id} group={selectedGroup} onSave={(name, description) => onRenameGroup(selectedGroup, name, description)} />
           {selectedGroup.source !== "helloasso" && <div className="danger-zone"><div><strong>Supprimer ce groupe</strong><p>Les adhérents et HelloAsso ne seront pas modifiés.</p></div><button className="danger-button" type="button" disabled={deletingGroupId === selectedGroup.id} onClick={() => onDeleteGroup(selectedGroup)}>{deletingGroupId === selectedGroup.id ? "Suppression…" : "Supprimer le groupe"}</button></div>}
         </div>}
       </Modal>}
@@ -2311,6 +2331,62 @@ function useColumnFilterValues(columns: RegisteredMemberColumn[], members: Membe
     (column: RegisteredMemberColumn, member: Member) => loaded[column.key]?.[member.id] ?? column.filterValue(member as never),
     [loaded]
   );
+}
+
+/** Groupes d'un adhérent, choisis directement depuis la liste (sans ouvrir la fiche). */
+function MemberGroupsDialog({ member, groups, onClose, onSave }: {
+  member: Member;
+  groups: Group[];
+  onClose: () => void;
+  onSave: (groupIds: string[]) => Promise<void>;
+}) {
+  const [selection, setSelection] = useState(() => new Set(member.groups.map((group) => group.id)));
+  const [search, setSearch] = useState("");
+  const [saving, setSaving] = useState(false);
+  const visible = groups.filter((group) => group.name.toLocaleLowerCase("fr").includes(search.trim().toLocaleLowerCase("fr")));
+  async function save() {
+    setSaving(true);
+    try { await onSave([...selection]); onClose(); } catch { setSaving(false); }
+  }
+  return <Modal title={`${member.firstName} ${member.lastName}`} eyebrow="Groupes" onClose={onClose}>
+    <div className="member-groups-quick">
+      {groups.length > 8 && <ListSearch value={search} onChange={setSearch} placeholder="Rechercher un groupe…" />}
+      {groups.length === 0 ? <p className="muted">Aucun groupe : créez-en un dans l'onglet Groupes.</p> : <div className="member-groups-quick-list">
+        {visible.map((group) => <label key={group.id} className="check-line">
+          <input type="checkbox" checked={selection.has(group.id)} onChange={() => setSelection((current) => toggledSet(current, group.id))} />
+          <span>{group.name}{group.source !== "manual" && <small className="muted"> · {group.source === "dynamic" ? "automatique" : "HelloAsso"}</small>}</span>
+        </label>)}
+      </div>}
+      <div className="gu-dialog-actions">
+        <button className="secondary" type="button" onClick={onClose}>Annuler</button>
+        <button className="primary" type="button" disabled={saving} onClick={() => void save()}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+      </div>
+    </div>
+  </Modal>;
+}
+
+/** Nom et description d'un groupe (réglages du groupe). */
+function GroupNameEditor({ group, onSave }: { group: Group; onSave: (name: string, description: string) => Promise<void> }) {
+  const [name, setName] = useState(group.name);
+  const [description, setDescription] = useState(group.description ?? "");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  if (group.source === "helloasso") {
+    return <div className="group-name-editor"><strong>Nom du groupe</strong><p className="muted">Ce groupe vient de la configuration HelloAsso : son nom se change dans Configuration.</p></div>;
+  }
+  const changed = name.trim() !== group.name || description.trim() !== (group.description ?? "");
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    try { await onSave(name.trim(), description.trim()); setSaved(true); } catch { /* message affiché par l'application */ }
+    finally { setSaving(false); }
+  }
+  return <form className="group-name-editor" onSubmit={(event) => void submit(event)}>
+    <strong>Nom du groupe</strong>
+    <label>Nom<input required minLength={2} maxLength={80} value={name} onChange={(event) => { setName(event.target.value); setSaved(false); }} /></label>
+    <label>Description<input maxLength={500} value={description} onChange={(event) => { setDescription(event.target.value); setSaved(false); }} /></label>
+    <div className="group-name-actions">{saved && <span className="muted">Enregistré.</span>}<button className="secondary compact-button" type="submit" disabled={!changed || saving || name.trim().length < 2}>{saving ? "Enregistrement…" : "Renommer"}</button></div>
+  </form>;
 }
 
 function GroupBadges({ groups }: { groups: Array<{ id: string; name: string }> }) {

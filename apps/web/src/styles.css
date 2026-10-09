@@ -705,6 +705,17 @@ th { color: var(--ink-500); font-family: var(--font-mono); font-size: 11px; font
 .header-preview div { display: grid; gap: 2px; flex: 1; }
 .header-preview strong { font-size: 17px; }
 .header-preview small, .header-preview > span { font-size: 11px; opacity: .7; letter-spacing: .04em; }
+.group-cell-button { display: flex; align-items: center; gap: 6px; width: 100%; padding: 4px 6px; margin: -4px -6px; border: 1px dashed transparent; border-radius: 8px; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.group-cell-button:hover { border-color: var(--line); background: var(--white); }
+.group-cell-edit { margin-left: auto; color: var(--ink-300); font-size: 12px; opacity: 0; }
+.group-cell-button:hover .group-cell-edit, .group-cell-button:focus-visible .group-cell-edit { opacity: 1; }
+@media (hover: none) { .group-cell-edit { opacity: 1; } }
+.member-groups-quick { display: grid; gap: 12px; }
+.member-groups-quick-list { display: grid; gap: 4px; max-height: 50vh; overflow-y: auto; }
+.member-groups-quick-list .check-line { display: flex; align-items: center; gap: 10px; padding: 7px 4px; }
+.group-name-editor { display: grid; gap: 10px; margin-bottom: 16px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; }
+.group-name-editor p { margin: 0; }
+.group-name-actions { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .attestation-payment { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--paper-3); font-size: 13.5px; }
 .attestation-payment ul { display: grid; gap: 3px; margin: 0 0 4px; padding: 0; list-style: none; }
