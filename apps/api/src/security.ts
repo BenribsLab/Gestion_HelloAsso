@@ -10,6 +10,14 @@ const loginSchema = z.object({
   email: z.email().max(254).transform((value) => value.trim().toLocaleLowerCase("fr")),
   password: z.string().min(1).max(256)
 });
+const forgotSchema = z.object({
+  email: z.email().max(254).transform((value) => value.trim().toLocaleLowerCase("fr"))
+});
+const resetSchema = z.object({
+  token: z.string().regex(/^[A-Za-z0-9_-]{40,60}$/),
+  password: z.string().min(14).max(256)
+});
+const resetLinkMinutes = 30;
 const passwordChangeSchema = z.object({
   currentPassword: z.string().min(1).max(256),
   newPassword: z.string().min(14).max(256)
@@ -103,7 +111,7 @@ export async function installSecurity(server: FastifyInstance, database: Databas
         return reply.code(403).send({ message: "Origine de la requête refusée." });
       }
     }
-    if (path === "/api/auth/login") return;
+    if (path === "/api/auth/login" || path === "/api/auth/password/forgot" || path === "/api/auth/password/reset") return;
 
     const rawToken = request.cookies[cookieName];
     if (!rawToken || rawToken.length > 200) return unauthorized(reply);
@@ -380,6 +388,121 @@ function deriveKey(password: string, salt: Buffer, length: number, options: { N:
     nodeScrypt(password, salt, length, options, (error, derivedKey) => {
       if (error) reject(error); else resolve(derivedKey);
     });
+  });
+}
+
+/** Envoi des e-mails du cœur (messagerie du club, fournie par une extension). */
+export type CoreMailer = { canSend(): boolean; send(mail: { to: string; subject: string; text: string }): Promise<void> };
+
+/**
+ * Mot de passe oublié. Réponse identique que l'adresse corresponde à un compte ou non (et
+ * envoyée avant tout traitement : la durée de réponse ne renseigne pas non plus) ; lien à usage
+ * unique, valable 30 minutes, dont seule l'empreinte est conservée ; au plus 3 liens par heure
+ * pour un compte. Après le changement, toutes les sessions du compte sont fermées et un e-mail
+ * confirme le changement.
+ */
+export function registerPasswordReset(server: FastifyInstance, database: Database, config: AppConfig, mailer: CoreMailer) {
+  server.post("/api/auth/password/forgot", {
+    config: { rateLimit: { max: 5, timeWindow: "15 minutes" } }
+  }, async (request, reply) => {
+    if (!config.auth.enabled) return reply.code(409).send({ message: "Authentification désactivée en mode local." });
+    const { email } = forgotSchema.parse(request.body);
+    const ip = validIp(request.ip);
+    void (async () => {
+      const user = (await database.query<{ id: string; email: string; displayName: string }>(
+        `SELECT id, email, display_name AS "displayName" FROM app_users WHERE lower(email) = lower($1) AND active = true`, [email]
+      )).rows[0];
+      if (!user) {
+        await audit(database, request, null, "auth.password.reset_unknown", 202, { email });
+        return;
+      }
+      const recent = await database.query<{ count: number }>(
+        "SELECT count(*)::int AS count FROM app_password_resets WHERE user_id = $1 AND created_at > now() - interval '1 hour'", [user.id]
+      );
+      if ((recent.rows[0]?.count ?? 0) >= 3) {
+        await audit(database, request, user.id, "auth.password.reset_throttled", 429);
+        return;
+      }
+      if (!mailer.canSend()) {
+        await audit(database, request, user.id, "auth.password.reset_no_mail", 503);
+        return;
+      }
+      const token = randomBytes(32).toString("base64url");
+      await database.query("UPDATE app_password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL", [user.id]);
+      await database.query(
+        "INSERT INTO app_password_resets (user_id, token_hash, expires_at, ip_address) VALUES ($1, $2, now() + ($3::int * interval '1 minute'), $4)",
+        [user.id, digest(token), resetLinkMinutes, ip]
+      );
+      // Le lien est dans le fragment (#…) : jamais envoyé au serveur, ni écrit dans les journaux.
+      await mailer.send({
+        to: user.email,
+        subject: "Réinitialisation de votre mot de passe",
+        text: [
+          `Bonjour ${user.displayName},`,
+          "",
+          "Une réinitialisation du mot de passe de votre espace de gestion a été demandée.",
+          "Pour choisir un nouveau mot de passe, ouvrez ce lien :",
+          `${config.auth.appOrigin}/#reinitialiser=${token}`,
+          "",
+          `Ce lien est valable ${resetLinkMinutes} minutes et ne sert qu'une fois.`,
+          "Si vous n'êtes pas à l'origine de cette demande, ignorez ce message : votre mot de passe actuel reste valable."
+        ].join("\n")
+      });
+      await audit(database, request, user.id, "auth.password.reset_requested", 202);
+    })().catch((error: unknown) => request.log.warn({ err: error instanceof Error ? error.message : String(error) }, "Lien de réinitialisation non envoyé."));
+    return reply.code(202).send({ sent: true });
+  });
+
+  server.post("/api/auth/password/reset", {
+    config: { rateLimit: { max: 10, timeWindow: "15 minutes" } }
+  }, async (request, reply) => {
+    if (!config.auth.enabled) return reply.code(409).send({ message: "Authentification désactivée en mode local." });
+    const input = resetSchema.parse(request.body);
+    const passwordHash = await hashPassword(input.password);
+    const client = await database.connect();
+    let user: { id: string; email: string; displayName: string } | undefined;
+    try {
+      await client.query("BEGIN");
+      // Lien consommé dans la même requête que sa vérification : jamais utilisable deux fois.
+      const used = await client.query<{ userId: string }>(`
+        UPDATE app_password_resets r SET used_at = now()
+        FROM app_users u
+        WHERE r.token_hash = $1 AND r.used_at IS NULL AND r.expires_at > now() AND u.id = r.user_id AND u.active = true
+        RETURNING r.user_id AS "userId"
+      `, [digest(input.token)]);
+      const userId = used.rows[0]?.userId;
+      if (!userId) {
+        await client.query("ROLLBACK");
+        await audit(database, request, null, "auth.password.reset_failed", 400);
+        return reply.code(400).send({ message: "Ce lien a expiré ou a déjà servi : refaites une demande depuis l'écran de connexion." });
+      }
+      user = (await client.query<{ id: string; email: string; displayName: string }>(
+        `UPDATE app_users SET password_hash = $2, updated_at = now() WHERE id = $1 RETURNING id, email, display_name AS "displayName"`,
+        [userId, passwordHash]
+      )).rows[0];
+      await client.query("UPDATE app_password_resets SET used_at = now() WHERE user_id = $1 AND used_at IS NULL", [userId]);
+      await client.query("DELETE FROM app_sessions WHERE user_id = $1", [userId]);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => undefined);
+      throw error;
+    } finally {
+      client.release();
+    }
+    await audit(database, request, user?.id ?? null, "auth.password.reset_succeeded", 200);
+    if (user && mailer.canSend()) {
+      void mailer.send({
+        to: user.email,
+        subject: "Votre mot de passe a été modifié",
+        text: [
+          `Bonjour ${user.displayName},`,
+          "",
+          "Le mot de passe de votre espace de gestion vient d'être modifié, et toutes les sessions ouvertes ont été fermées.",
+          "Si vous n'êtes pas à l'origine de ce changement, prévenez immédiatement un autre responsable du club."
+        ].join("\n")
+      }).catch(() => undefined);
+    }
+    return { reset: true };
   });
 }
 

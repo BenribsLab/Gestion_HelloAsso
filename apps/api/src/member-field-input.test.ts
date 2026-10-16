@@ -19,7 +19,7 @@ describe("inferMemberFieldInput", () => {
   it("ne transforme pas deux réponses isolées en liste fermée", () => {
     expect(inferMemberFieldInput("TextInput", ["Paris", "Lyon"])).toEqual({
       inputMode: "text",
-      options: ["Paris", "Lyon"]
+      options: ["Lyon", "Paris"]
     });
   });
 

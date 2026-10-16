@@ -353,6 +353,11 @@ export const api = {
     csrfToken = null;
     return result;
   },
+  /** Mot de passe oublié : un lien est envoyé si l'adresse correspond à un compte (réponse identique sinon). */
+  forgotPassword: (email: string) =>
+    request<{ sent: true }>("/api/auth/password/forgot", { method: "POST", body: JSON.stringify({ email }) }),
+  resetPassword: (token: string, password: string) =>
+    request<{ reset: true }>("/api/auth/password/reset", { method: "POST", body: JSON.stringify({ token, password }) }),
   changePassword: (currentPassword: string, newPassword: string) =>
     request<{ changed: true }>("/api/auth/password", {
       method: "PUT",

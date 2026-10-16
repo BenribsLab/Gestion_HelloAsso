@@ -13,7 +13,7 @@ import { HelloAssoSettingsError, HelloAssoSettingsService } from "./helloasso-se
 import { SecureSettingsError, SecureSettingsStore } from "./secure-settings.js";
 import { configureDynamicGroups, getDynamicGroupCriteria, refreshDynamicGroups, validateDynamicCriterion } from "./dynamic-groups.js";
 import { fencingCategoryError, normalizeBirthDate } from "./fencing-category.js";
-import { installSecurity, prepareAuthentication } from "./security.js";
+import { installSecurity, prepareAuthentication, registerPasswordReset } from "./security.js";
 import { ExtensionRegistry, ExtensionRegistryError, publicExtensionAssetContentType } from "./extensions.js";
 import { ExtensionContracts } from "./extension-contracts.js";
 import { loadExtensions, packageFile } from "./extension-loader.js";
@@ -79,6 +79,10 @@ const extensions = await ExtensionRegistry.create(database, config);
 void extensions.reportInstalledVersions().catch((error: unknown) => server.log.warn({ error }, "Déclaration des extensions au serveur central impossible."));
 const contracts = new ExtensionContracts();
 configureDynamicGroups({ contracts, isExtensionEnabled: (id) => extensions.isEnabled(id) });
+registerPasswordReset(server, database, config, {
+  canSend: () => contracts.canSendMail((id) => extensions.isEnabled(id)),
+  send: (mail) => contracts.sendMail(mail, (id) => extensions.isEnabled(id))
+});
 await loadExtensions({ server, database, config, contracts, registry: extensions, helloasso, settings: secureSettings });
 registerExtensionInstaller(server, database, config, extensions);
 registerAttestationRoutes({ server, database, contracts, isExtensionEnabled: (id) => extensions.isEnabled(id) });

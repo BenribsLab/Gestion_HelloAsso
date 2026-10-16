@@ -557,6 +557,16 @@ export function App() {
                   onConfigurationChanged={() => void loadData()}
                 />
                 <ClubIdentityPanel />
+                {authEnabled && <section className="panel">
+                  <div className="section-heading">
+                    <div>
+                      <p className="eyebrow">Sécurité</p>
+                      <h2>Mon compte</h2>
+                      <p className="muted">Connecté avec {authUser.email}. Mot de passe et comptes des responsables du club.</p>
+                    </div>
+                    <button className="secondary" type="button" onClick={() => setAccountOpen(true)}>Changer mon mot de passe</button>
+                  </div>
+                </section>}
               </div>
             )}
             {view === "extensions" && extensionConfiguration && <Extensions items={extensions} configuration={extensionConfiguration} onChanged={loadData} />}
@@ -803,22 +813,82 @@ function NavButton({
   );
 }
 
+// Lien « mot de passe oublié » reçu par e-mail : https://…/#reinitialiser=<jeton> (le fragment n'est
+// jamais envoyé au serveur). Lu une seule fois, au chargement de la page.
+const resetLinkToken = /^#reinitialiser=([A-Za-z0-9_-]{40,60})$/.exec(window.location.hash)?.[1] ?? null;
+
 function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) => Promise<void> }) {
+  const [mode, setMode] = useState<"login" | "forgot" | "sent" | "reset" | "done">(resetLinkToken ? "reset" : "login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Le jeton ne reste pas dans l'adresse (historique, partage d'écran…).
+  useEffect(() => {
+    if (resetLinkToken && window.location.hash) window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  }, []);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
     setBusy(true); setError(null);
     try {
-      await onLogin(email, password);
+      if (mode === "forgot") {
+        await api.forgotPassword(email);
+        setMode("sent");
+      } else if (mode === "reset") {
+        if (password !== confirmation) throw new Error("Les deux mots de passe sont différents.");
+        await api.resetPassword(resetLinkToken ?? "", password);
+        setPassword(""); setConfirmation("");
+        setMode("done");
+      } else {
+        await onLogin(email, password);
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Connexion impossible.");
     } finally {
       setBusy(false);
     }
+  }
+
+  function show(next: "login" | "forgot") {
+    setMode(next); setError(null); setPassword(""); setConfirmation("");
+  }
+
+  if (mode !== "login") {
+    return <main className="login-screen">
+      <section className="login-card">
+        <div className="login-brand"><span className="brand-mark">g</span><div><strong>Gestion Asso</strong><small>Espace privé du club</small></div></div>
+        {mode === "forgot" && <>
+          <div><p className="eyebrow">Mot de passe oublié</p><h1>Nouveau mot de passe</h1><p className="muted">Indiquez l'adresse e-mail de votre compte : vous recevrez un lien pour choisir un nouveau mot de passe.</p></div>
+          {error && <div className="alert error" role="alert">{error}</div>}
+          <form onSubmit={submit}>
+            <label>Adresse e-mail<input autoFocus required type="email" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} /></label>
+            <button className="primary" type="submit" disabled={busy || !email}>{busy ? "Envoi…" : "Recevoir le lien"}</button>
+          </form>
+        </>}
+        {mode === "sent" && <>
+          <div><p className="eyebrow">Mot de passe oublié</p><h1>Vérifiez vos e-mails</h1></div>
+          <div className="alert success" role="status">Si cette adresse correspond à un compte, un e-mail vient de partir avec un lien valable 30 minutes.</div>
+          <p className="muted">Rien reçu après quelques minutes ? Regardez dans les courriers indésirables. Si le club n'a pas encore configuré l'envoi d'e-mails, demandez à un autre responsable de vous créer un nouveau compte.</p>
+        </>}
+        {mode === "reset" && <>
+          <div><p className="eyebrow">Mot de passe oublié</p><h1>Choisir un mot de passe</h1><p className="muted">Au moins 14 caractères, et un mot de passe que vous n'utilisez nulle part ailleurs.</p></div>
+          {error && <div className="alert error" role="alert">{error}</div>}
+          <form onSubmit={submit}>
+            <label>Nouveau mot de passe<input autoFocus required minLength={14} maxLength={256} type="password" autoComplete="new-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
+            <label>Confirmer le mot de passe<input required minLength={14} maxLength={256} type="password" autoComplete="new-password" value={confirmation} onChange={(event) => setConfirmation(event.target.value)} /></label>
+            <button className="primary" type="submit" disabled={busy || password.length < 14 || password !== confirmation}>{busy ? "Enregistrement…" : "Enregistrer le mot de passe"}</button>
+          </form>
+        </>}
+        {mode === "done" && <>
+          <div><p className="eyebrow">Mot de passe oublié</p><h1>Mot de passe modifié</h1></div>
+          <div className="alert success" role="status">Votre nouveau mot de passe est enregistré. Toutes les sessions ouvertes ont été fermées.</div>
+        </>}
+        <button className="link-button" type="button" onClick={() => show("login")}>Retour à la connexion</button>
+      </section>
+    </main>;
   }
 
   return <main className="login-screen">
@@ -831,6 +901,7 @@ function LoginScreen({ onLogin }: { onLogin: (email: string, password: string) =
         <label>Mot de passe<input required type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} /></label>
         <button className="primary" type="submit" disabled={busy || !email || !password}>{busy ? "Connexion…" : "Se connecter"}</button>
       </form>
+      <button className="link-button" type="button" onClick={() => show("forgot")}>Mot de passe oublié ?</button>
       <p className="login-security">Connexion chiffrée · Session privée · Accès journalisé</p>
     </section>
   </main>;
