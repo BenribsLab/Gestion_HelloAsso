@@ -127,12 +127,27 @@ export type TransactionalMail = {
 };
 export type MailProvider = { extensionId: string; send(mail: TransactionalMail): Promise<void> };
 
+/**
+ * Rédaction d'un texte par un service d'IA (module « Assistant IA ») pour les autres modules.
+ * Le module qui le fournit garde seul la clé du service ; l'appelant ne la voit jamais.
+ */
+export type TextGenerationRequest = {
+  /** Consignes (rôle, ton, contraintes). */
+  instructions: string;
+  /** Contenu à traiter. */
+  input: string;
+  /** Longueur maximale de la réponse, en jetons. */
+  maxOutputTokens?: number;
+};
+export type TextProvider = { extensionId: string; generate(request: TextGenerationRequest): Promise<string> };
+
 export class ExtensionContracts {
   readonly irlTargets = new FeatureGateRegistry();
   private memberCategoryProvider: MemberCategoryProvider | null = null;
   private groupScheduleProvider: GroupScheduleProvider | null = null;
   private healthDocumentProvider: HealthDocumentProvider | null = null;
   private mailProvider: MailProvider | null = null;
+  private textProvider: TextProvider | null = null;
   private readonly groupCriterionProviders = new Map<string, GroupCriterionProvider>();
   private readonly memberFieldRequirements = new Map<string, MemberFieldRequirement[]>();
 
@@ -245,5 +260,23 @@ export class ExtensionContracts {
       throw new Error("Aucun service d'envoi d'e-mail n'est disponible : activez l'extension Messagerie Mail.");
     }
     await provider.send(mail);
+  }
+
+  /** Rédaction de texte par IA, quand une extension la fournit (Assistant IA) et qu'elle est active. */
+  registerTextProvider(provider: TextProvider) {
+    this.textProvider = provider;
+  }
+
+  canGenerateText(isExtensionEnabled: (extensionId: string) => boolean) {
+    const provider = this.textProvider;
+    return Boolean(provider && isExtensionEnabled(provider.extensionId));
+  }
+
+  async generateText(request: TextGenerationRequest, isExtensionEnabled: (extensionId: string) => boolean) {
+    const provider = this.textProvider;
+    if (!provider || !isExtensionEnabled(provider.extensionId)) {
+      throw new Error("Aucun service d'IA n'est disponible : activez l'extension Assistant IA.");
+    }
+    return await provider.generate(request);
   }
 }
